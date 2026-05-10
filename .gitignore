@@ -1,0 +1,10 @@
+.vs/*
+Simulation/*
+Library/*
+Packages/*
+Logs/*
+UserSettings/*
+ProjectSettings/*
+Temp/*
+Assets/Scenes/Crafts/*
+PROJECT_ARCHITECTURE.md
