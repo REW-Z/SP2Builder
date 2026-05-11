@@ -94,19 +94,19 @@ namespace MeshTools
                 return CreateNoOpSliceResult(mesh, meshToResult);
             }
 
-            MeshToolMeshData data = MeshToolGeometry.ReadTriangles(mesh, meshToResult);
+            MeshData data = MeshToolGeometry.ParseTriangles(mesh, meshToResult);
             int subMeshCount = cap ? Mathf.Max(data.SubMeshCount, capSubMesh + 1) : data.SubMeshCount;
 
             // 正负两侧各自独立构建；capSegments 用来稍后拼接切口封盖。
-            MeshToolMeshBuilder positiveBuilder = new MeshToolMeshBuilder(data.Attributes, subMeshCount);
-            MeshToolMeshBuilder negativeBuilder = new MeshToolMeshBuilder(data.Attributes, subMeshCount);
+            MeshBuilder positiveBuilder = new MeshBuilder(data.Attributes, subMeshCount);
+            MeshBuilder negativeBuilder = new MeshBuilder(data.Attributes, subMeshCount);
             List<CapSegment> capSegments = new List<CapSegment>();
             bool intersects = false;
 
             for (int i = 0; i < data.Triangles.Count; i++)
             {
-                MeshToolTriangle triangle = data.Triangles[i];
-                MeshToolVertex[] vertices =
+                Triangle triangle = data.Triangles[i];
+                Vertex[] vertices =
                 {
                     triangle.A,
                     triangle.B,
@@ -142,8 +142,8 @@ namespace MeshTools
                 {
                     intersects = true;
                     // 三角形被平面切到时，分别裁出正侧和负侧的多边形。
-                    List<MeshToolVertex> positivePolygon = ClipPolygon(vertices, distances, true);
-                    List<MeshToolVertex> negativePolygon = ClipPolygon(vertices, distances, false);
+                    List<Vertex> positivePolygon = ClipPolygon(vertices, distances, true);
+                    List<Vertex> negativePolygon = ClipPolygon(vertices, distances, false);
                     positiveBuilder.AddPolygon(positivePolygon, triangle.SubMesh);
                     negativeBuilder.AddPolygon(negativePolygon, triangle.SubMesh);
 
@@ -181,18 +181,18 @@ namespace MeshTools
                 return CreateNoOpSliceResult(mesh, meshToResult);
             }
 
-            MeshToolMeshData data = MeshToolGeometry.ReadTriangles(mesh, meshToResult);
+            MeshData data = MeshToolGeometry.ParseTriangles(mesh, meshToResult);
             int subMeshCount = cap ? Mathf.Max(data.SubMeshCount, capSubMesh + 1) : data.SubMeshCount;
 
-            MeshToolMeshBuilder positiveBuilder = new MeshToolMeshBuilder(data.Attributes, subMeshCount);
-            MeshToolMeshBuilder negativeBuilder = new MeshToolMeshBuilder(data.Attributes, subMeshCount);
+            MeshBuilder positiveBuilder = new MeshBuilder(data.Attributes, subMeshCount);
+            MeshBuilder negativeBuilder = new MeshBuilder(data.Attributes, subMeshCount);
             List<CapSegment> capSegments = new List<CapSegment>();
             bool intersects = false;
 
             for (int i = 0; i < data.Triangles.Count; i++)
             {
-                MeshToolTriangle triangle = data.Triangles[i];
-                MeshToolVertex[] vertices =
+                Triangle triangle = data.Triangles[i];
+                Vertex[] vertices =
                 {
                     triangle.A,
                     triangle.B,
@@ -226,8 +226,8 @@ namespace MeshTools
                 if (!positiveSide && !negativeSide)
                 {
                     intersects = true;
-                    List<MeshToolVertex> positivePolygon = ClipPolygon(vertices, distances, true);
-                    List<MeshToolVertex> negativePolygon = ClipPolygon(vertices, distances, false);
+                    List<Vertex> positivePolygon = ClipPolygon(vertices, distances, true);
+                    List<Vertex> negativePolygon = ClipPolygon(vertices, distances, false);
                     positiveBuilder.AddPolygon(positivePolygon, triangle.SubMesh);
                     negativeBuilder.AddPolygon(negativePolygon, triangle.SubMesh);
 
@@ -348,25 +348,25 @@ namespace MeshTools
 
         private static Mesh CreateTransformedCopy(Mesh mesh, Matrix4x4 meshToResult, string meshName)
         {
-            MeshToolMeshData data = MeshToolGeometry.ReadTriangles(mesh, meshToResult);
-            MeshToolMeshBuilder builder = new MeshToolMeshBuilder(data.Attributes, data.SubMeshCount);
+            MeshData data = MeshToolGeometry.ParseTriangles(mesh, meshToResult);
+            MeshBuilder builder = new MeshBuilder(data.Attributes, data.SubMeshCount);
             AddAllTriangles(builder, data);
             return builder.ToMesh(meshName);
         }
 
         private static PreviewMeshData CreateTransformedCopy(PreviewMeshData mesh, Matrix4x4 meshToResult, string meshName)
         {
-            MeshToolMeshData data = MeshToolGeometry.ReadTriangles(mesh, meshToResult);
-            MeshToolMeshBuilder builder = new MeshToolMeshBuilder(data.Attributes, data.SubMeshCount);
+            MeshData data = MeshToolGeometry.ParseTriangles(mesh, meshToResult);
+            MeshBuilder builder = new MeshBuilder(data.Attributes, data.SubMeshCount);
             AddAllTriangles(builder, data);
             return builder.ToPreviewMeshData(meshName);
         }
 
-        private static void AddAllTriangles(MeshToolMeshBuilder builder, MeshToolMeshData data)
+        private static void AddAllTriangles(MeshBuilder builder, MeshData data)
         {
             for (int i = 0; i < data.Triangles.Count; i++)
             {
-                MeshToolTriangle triangle = data.Triangles[i];
+                Triangle triangle = data.Triangles[i];
                 builder.AddTriangle(triangle.A, triangle.B, triangle.C, triangle.SubMesh);
             }
         }
@@ -374,14 +374,14 @@ namespace MeshTools
         /// <summary>
         /// 使用 Sutherland-Hodgman 思路，把三角形裁到平面指定侧。
         /// </summary>
-        private static List<MeshToolVertex> ClipPolygon(MeshToolVertex[] vertices, float[] distances, bool keepPositive)
+        private static List<Vertex> ClipPolygon(Vertex[] vertices, float[] distances, bool keepPositive)
         {
-            List<MeshToolVertex> output = new List<MeshToolVertex>(4);
+            List<Vertex> output = new List<Vertex>(4);
             for (int i = 0; i < vertices.Length; i++)
             {
                 int nextIndex = (i + 1) % vertices.Length;
-                MeshToolVertex current = vertices[i];
-                MeshToolVertex next = vertices[nextIndex];
+                Vertex current = vertices[i];
+                Vertex next = vertices[nextIndex];
                 float currentDistance = distances[i];
                 float nextDistance = distances[nextIndex];
                 bool currentInside = keepPositive
@@ -419,9 +419,9 @@ namespace MeshTools
         /// <summary>
         /// 根据两端到平面的有符号距离，插值得到边和平面的交点顶点。
         /// </summary>
-        private static MeshToolVertex IntersectEdge(
-            MeshToolVertex a,
-            MeshToolVertex b,
+        private static Vertex IntersectEdge(
+            Vertex a,
+            Vertex b,
             float distanceA,
             float distanceB)
         {
@@ -432,13 +432,13 @@ namespace MeshTools
             }
 
             float t = Mathf.Clamp01(distanceA / denominator);
-            return MeshToolVertex.Lerp(a, b, t);
+            return Vertex.Lerp(a, b, t);
         }
 
         /// <summary>
         /// 追加顶点时合并连续重复点。
         /// </summary>
-        private static void AddCleanVertex(List<MeshToolVertex> vertices, MeshToolVertex vertex)
+        private static void AddCleanVertex(List<Vertex> vertices, Vertex vertex)
         {
             if (vertices.Count == 0 || !MeshToolGeometry.SamePosition(vertices[vertices.Count - 1].Position, vertex.Position))
             {
@@ -449,7 +449,7 @@ namespace MeshTools
         /// <summary>
         /// 从一个跨平面的三角形中提取切口线段。
         /// </summary>
-        private static bool TryGetCapSegment(MeshToolVertex[] vertices, float[] distances, out CapSegment segment)
+        private static bool TryGetCapSegment(Vertex[] vertices, float[] distances, out CapSegment segment)
         {
             bool hasPositive = false;
             bool hasNegative = false;
@@ -467,7 +467,7 @@ namespace MeshTools
                 return false;
             }
 
-            List<MeshToolVertex> intersections = new List<MeshToolVertex>(2);
+            List<Vertex> intersections = new List<Vertex>(2);
             // 原始顶点刚好在平面上时，它本身就是切口端点。
             for (int i = 0; i < vertices.Length; i++)
             {
@@ -509,7 +509,7 @@ namespace MeshTools
         /// <summary>
         /// 向交点列表加入一个不重复的交点。
         /// </summary>
-        private static void AddUniqueIntersection(List<MeshToolVertex> intersections, MeshToolVertex vertex)
+        private static void AddUniqueIntersection(List<Vertex> intersections, Vertex vertex)
         {
             for (int i = 0; i < intersections.Count; i++)
             {
@@ -525,7 +525,7 @@ namespace MeshTools
         /// <summary>
         /// 从候选交点中保留距离最远的一对。
         /// </summary>
-        private static void SelectFarthestPair(List<MeshToolVertex> intersections)
+        private static void SelectFarthestPair(List<Vertex> intersections)
         {
             int bestA = 0;
             int bestB = 1;
@@ -545,8 +545,8 @@ namespace MeshTools
                 }
             }
 
-            MeshToolVertex a = intersections[bestA];
-            MeshToolVertex b = intersections[bestB];
+            Vertex a = intersections[bestA];
+            Vertex b = intersections[bestB];
             intersections.Clear();
             intersections.Add(a);
             intersections.Add(b);
@@ -556,7 +556,7 @@ namespace MeshTools
         /// 把所有切口线段串成环，并为每个环生成封盖三角形。
         /// </summary>
         private static void AddCaps(
-            MeshToolMeshBuilder builder,
+            MeshBuilder builder,
             List<CapSegment> segments,
             Plane plane,
             Vector3 capNormal,
@@ -571,7 +571,7 @@ namespace MeshTools
                 loopBuilder.AddSegment(segments[i].A, segments[i].B);
             }
 
-            List<List<MeshToolVertex>> loops = loopBuilder.BuildLoops();
+            List<List<Vertex>> loops = loopBuilder.BuildLoops();
             AddCapLoops(builder, loops, basis, capNormal, capSubMesh);
         }
 
@@ -579,8 +579,8 @@ namespace MeshTools
         /// 为切口环生成封盖；当一个切平面同时切到空心外环和内环时，生成环形端面而不是把内孔填死。
         /// </summary>
         private static void AddCapLoops(
-            MeshToolMeshBuilder builder,
-            List<List<MeshToolVertex>> loops,
+            MeshBuilder builder,
+            List<List<Vertex>> loops,
             PlaneBasis basis,
             Vector3 capNormal,
             int capSubMesh)
@@ -641,8 +641,8 @@ namespace MeshTools
         /// 为一个切口闭合环生成封盖面。
         /// </summary>
         private static void AddCapLoop(
-            MeshToolMeshBuilder builder,
-            List<MeshToolVertex> loop,
+            MeshBuilder builder,
+            List<Vertex> loop,
             PlaneBasis basis,
             Vector3 capNormal,
             int capSubMesh)
@@ -652,7 +652,7 @@ namespace MeshTools
                 return;
             }
 
-            List<MeshToolVertex> vertices = new List<MeshToolVertex>(loop.Count);
+            List<Vertex> vertices = new List<Vertex>(loop.Count);
             List<Vector2> projected = new List<Vector2>(loop.Count);
             Vector3 normal = capNormal.normalized;
             Vector4 tangent = new Vector4(basis.AxisU.x, basis.AxisU.y, basis.AxisU.z, 1f);
@@ -660,7 +660,7 @@ namespace MeshTools
             // 把三维切口点投影到切割平面的二维坐标中，方便做耳切三角化。
             for (int i = 0; i < loop.Count; i++)
             {
-                MeshToolVertex vertex = loop[i];
+                Vertex vertex = loop[i];
                 vertex.Normal = normal;
                 vertex.Tangent = tangent;
                 vertex.Uv = Project(vertex.Position, basis);
@@ -688,9 +688,9 @@ namespace MeshTools
             // 正负两侧的封盖法线相反，所以需要按目标法线决定三角形绕序。
             for (int i = 0; i + 2 < triangles.Count; i += 3)
             {
-                MeshToolVertex a = vertices[triangles[i]];
-                MeshToolVertex b = vertices[triangles[i + 1]];
-                MeshToolVertex c = vertices[triangles[i + 2]];
+                Vertex a = vertices[triangles[i]];
+                Vertex b = vertices[triangles[i + 1]];
+                Vertex c = vertices[triangles[i + 2]];
 
                 if (reverseWinding)
                 {
@@ -703,15 +703,15 @@ namespace MeshTools
             }
         }
 
-        private static ProjectedCapLoop ProjectCapLoop(List<MeshToolVertex> loop, PlaneBasis basis, Vector3 capNormal)
+        private static ProjectedCapLoop ProjectCapLoop(List<Vertex> loop, PlaneBasis basis, Vector3 capNormal)
         {
-            List<MeshToolVertex> vertices = new List<MeshToolVertex>(loop.Count);
+            List<Vertex> vertices = new List<Vertex>(loop.Count);
             List<Vector2> projected = new List<Vector2>(loop.Count);
             Vector3 normal = capNormal.normalized;
             Vector4 tangent = new Vector4(basis.AxisU.x, basis.AxisU.y, basis.AxisU.z, 1f);
             for (int i = 0; i < loop.Count; i++)
             {
-                MeshToolVertex vertex = loop[i];
+                Vertex vertex = loop[i];
                 vertex.Normal = normal;
                 vertex.Tangent = tangent;
                 vertex.Uv = Project(vertex.Position, basis);
@@ -729,7 +729,7 @@ namespace MeshTools
             return new ProjectedCapLoop(vertices, projected);
         }
 
-        private static void AddFanCapLoop(MeshToolMeshBuilder builder, ProjectedCapLoop loop, Vector3 normal, int capSubMesh)
+        private static void AddFanCapLoop(MeshBuilder builder, ProjectedCapLoop loop, Vector3 normal, int capSubMesh)
         {
             if (loop.Count < 3)
             {
@@ -743,7 +743,7 @@ namespace MeshTools
             }
         }
 
-        private static void AddRimCapLoop(MeshToolMeshBuilder builder, ProjectedCapLoop outer, ProjectedCapLoop inner, Vector3 normal, int capSubMesh)
+        private static void AddRimCapLoop(MeshBuilder builder, ProjectedCapLoop outer, ProjectedCapLoop inner, Vector3 normal, int capSubMesh)
         {
             if (outer.Count < 2 || inner.Count < 2)
             {
@@ -807,7 +807,7 @@ namespace MeshTools
             }
         }
 
-        private static void AddCapTriangle(MeshToolMeshBuilder builder, MeshToolVertex a, MeshToolVertex b, MeshToolVertex c, Vector3 normal, int capSubMesh)
+        private static void AddCapTriangle(MeshBuilder builder, Vertex a, Vertex b, Vertex c, Vector3 normal, int capSubMesh)
         {
             Vector3 cross = Vector3.Cross(b.Position - a.Position, c.Position - a.Position);
             if (cross.sqrMagnitude <= MeshToolGeometry.EpsilonSqr)
@@ -942,7 +942,7 @@ namespace MeshTools
 
         private sealed class ProjectedCapLoop
         {
-            public ProjectedCapLoop(List<MeshToolVertex> vertices, List<Vector2> points2D)
+            public ProjectedCapLoop(List<Vertex> vertices, List<Vector2> points2D)
             {
                 Vertices = vertices;
                 Points2D = points2D;
@@ -953,7 +953,7 @@ namespace MeshTools
 
             public int Count { get { return Vertices.Count; } }
 
-            public List<MeshToolVertex> Vertices { get; }
+            public List<Vertex> Vertices { get; }
 
             public List<Vector2> Points2D { get; }
 
@@ -1116,13 +1116,13 @@ namespace MeshTools
 
         private struct CapSegment
         {
-            public MeshToolVertex A;
-            public MeshToolVertex B;
+            public Vertex A;
+            public Vertex B;
 
             /// <summary>
             /// 创建一条切口线段。
             /// </summary>
-            public CapSegment(MeshToolVertex a, MeshToolVertex b)
+            public CapSegment(Vertex a, Vertex b)
             {
                 A = a;
                 B = b;
@@ -1170,7 +1170,7 @@ namespace MeshTools
             /// <summary>
             /// 把一条切口线段加入无向图中。
             /// </summary>
-            public void AddSegment(MeshToolVertex a, MeshToolVertex b)
+            public void AddSegment(Vertex a, Vertex b)
             {
                 int ai = FindOrAddPoint(a);
                 int bi = FindOrAddPoint(b);
@@ -1200,9 +1200,9 @@ namespace MeshTools
             /// <summary>
             /// 从未使用边集合中追踪所有闭合切口环。
             /// </summary>
-            public List<List<MeshToolVertex>> BuildLoops()
+            public List<List<Vertex>> BuildLoops()
             {
-                List<List<MeshToolVertex>> loops = new List<List<MeshToolVertex>>();
+                List<List<Vertex>> loops = new List<List<Vertex>>();
                 while (unusedEdges.Count > 0)
                 {
                     EdgeKey startEdge = FirstUnusedEdge();
@@ -1250,7 +1250,7 @@ namespace MeshTools
             /// <summary>
             /// 查找已有近似点，找不到时创建新图点。
             /// </summary>
-            private int FindOrAddPoint(MeshToolVertex vertex)
+            private int FindOrAddPoint(Vertex vertex)
             {
                 for (int i = 0; i < points.Count; i++)
                 {
@@ -1314,9 +1314,9 @@ namespace MeshTools
             /// <summary>
             /// 把图点索引路径转换成顶点路径。
             /// </summary>
-            private List<MeshToolVertex> ToVertexLoop(List<int> indices)
+            private List<Vertex> ToVertexLoop(List<int> indices)
             {
-                List<MeshToolVertex> loop = new List<MeshToolVertex>(indices.Count);
+                List<Vertex> loop = new List<Vertex>(indices.Count);
                 for (int i = 0; i < indices.Count; i++)
                 {
                     loop.Add(points[indices[i]].Vertex);
@@ -1327,13 +1327,13 @@ namespace MeshTools
 
             private sealed class GraphPoint
             {
-                public MeshToolVertex Vertex;
+                public Vertex Vertex;
                 public List<int> Neighbors = new List<int>();
 
                 /// <summary>
                 /// 创建切口图中的一个节点。
                 /// </summary>
-                public GraphPoint(MeshToolVertex vertex)
+                public GraphPoint(Vertex vertex)
                 {
                     Vertex = vertex;
                 }

@@ -637,6 +637,7 @@ public class Craft : MonoBehaviour
 	private void BeginQueuedPreviewRebuild()
 	{
 		_activePreviewRebuildParts = GetQueuedPreviewParts();
+
 		_activePreviewRebuildIndex = 0;
 		_activePreviewTouchedFuselage = false;
 		_activePreviewFuselagePartIds.Clear();
@@ -658,7 +659,7 @@ public class Craft : MonoBehaviour
 
 			if(this == null || gameObject == null || Application.isPlaying)
 			{
-				using(new ProfilerSample("FuselagePart.ApplyNeighbourSmoothing"))
+				using(new SampleProfiler("FuselagePart.ApplyNeighbourSmoothing"))
 				{
                     FinishQueuedPreviewRebuild(repaint: false);
                 }
@@ -685,7 +686,7 @@ public class Craft : MonoBehaviour
 						_activePreviewTouchedFuselage = true;
 						_activePreviewFuselagePartIds.Add(fuselage.PartId);
 
-						using(new ProfilerSample("fuselage.RefreshPreview"))
+						using(new SampleProfiler("fuselage.RefreshPreview"))
 						{
                             fuselage.RefreshPreview();
                         }
@@ -716,7 +717,7 @@ public class Craft : MonoBehaviour
 			if (_activePreviewTouchedFuselage)
 			{
 
-                using(new ProfilerSample("FuselagePart.ApplyNeighbourSmoothing"))
+                using(new SampleProfiler("FuselagePart.ApplyNeighbourSmoothing"))
 				{
                     FuselagePart.ApplyNeighbourSmoothing(this, _activePreviewFuselagePartIds);
                 }
@@ -725,14 +726,14 @@ public class Craft : MonoBehaviour
 			bool shouldDelaySmoothing = _activePreviewTouchedFuselage;
 
 
-            using(new ProfilerSample("FuselagePart.ApplyNeighbourSmoothing"))
+            using(new SampleProfiler("FuselagePart.ApplyNeighbourSmoothing"))
             {
                 FinishQueuedPreviewRebuild(repaint: true);
             }
 
 			if (shouldDelaySmoothing)
 			{
-                using(new ProfilerSample("QueuePostRebuildSmoothing"))
+                using(new SampleProfiler("QueuePostRebuildSmoothing"))
 				{
                     QueuePostRebuildSmoothing();
                 }

@@ -189,6 +189,9 @@ namespace MeshTools
             Matrix4x4 rhsToResult,
             MeshBooleanOperation operation)
         {
+            using StopWatch _ = new("Evaluate");
+            
+
             // 先用 Mesh 自带 bounds 做最快的分离测试，避免分离物体还去展开所有三角形和构建 BSP。
             Bounds lhsFastBounds;
             Bounds rhsFastBounds;
@@ -200,8 +203,8 @@ namespace MeshTools
             }
 
             // 先把两个 Mesh 都读成内部三角形数据，并统一到结果坐标空间。
-            MeshToolMeshData lhsData = MeshToolGeometry.ReadTriangles(lhs, lhsToResult);
-            MeshToolMeshData rhsData = MeshToolGeometry.ReadTriangles(rhs, rhsToResult);
+            MeshData lhsData = MeshToolGeometry.ParseTriangles(lhs, lhsToResult);
+            MeshData rhsData = MeshToolGeometry.ParseTriangles(rhs, rhsToResult);
 
             MeshToolAttributeMask attributes = lhsData.Attributes | rhsData.Attributes | MeshToolAttributeMask.Normals;
             int subMeshCount = Mathf.Max(lhsData.SubMeshCount, rhsData.SubMeshCount);
@@ -237,70 +240,17 @@ namespace MeshTools
             }
 
             // 把 CSG 产生的多边形写回 MeshBuilder，保留原子网格索引。
-            MeshToolMeshBuilder builder = new MeshToolMeshBuilder(attributes, subMeshCount);
+            MeshBuilder builder = new MeshBuilder(attributes, subMeshCount);
             for (int i = 0; i < resultPolygons.Count; i++)
             {
                 builder.AddPolygon(resultPolygons[i].Vertices, resultPolygons[i].SubMesh);
             }
+
+
 
             return builder.ToMesh("MeshBoolean_" + operation);
         }
 
-        internal static PreviewMeshData Evaluate(
-            PreviewMeshData lhs,
-            Matrix4x4 lhsToResult,
-            PreviewMeshData rhs,
-            Matrix4x4 rhsToResult,
-            MeshBooleanOperation operation)
-        {
-            MeshToolMeshData lhsData = MeshToolGeometry.ReadTriangles(lhs, lhsToResult);
-            MeshToolMeshData rhsData = MeshToolGeometry.ReadTriangles(rhs, rhsToResult);
-            return EvaluateData(lhsData, rhsData, operation, "MeshBoolean_" + operation);
-        }
-
-        private static PreviewMeshData EvaluateData(
-            MeshToolMeshData lhsData,
-            MeshToolMeshData rhsData,
-            MeshBooleanOperation operation,
-            string meshName)
-        {
-            MeshToolAttributeMask attributes = lhsData.Attributes | rhsData.Attributes | MeshToolAttributeMask.Normals;
-            int subMeshCount = Mathf.Max(lhsData.SubMeshCount, rhsData.SubMeshCount);
-
-            if (TryGetBounds(lhsData.Triangles, out Bounds lhsBounds) &&
-                TryGetBounds(rhsData.Triangles, out Bounds rhsBounds) &&
-                !lhsBounds.Intersects(rhsBounds))
-            {
-                return BuildSeparatedResultData(lhsData, rhsData, attributes, subMeshCount, operation, meshName);
-            }
-
-            List<CsgPolygon> lhsPolygons = ToPolygons(lhsData.Triangles);
-            List<CsgPolygon> rhsPolygons = ToPolygons(rhsData.Triangles);
-
-            List<CsgPolygon> resultPolygons;
-            switch (operation)
-            {
-                case MeshBooleanOperation.Union:
-                    resultPolygons = UnionPolygons(lhsPolygons, rhsPolygons);
-                    break;
-                case MeshBooleanOperation.Subtract:
-                    resultPolygons = SubtractPolygons(lhsPolygons, rhsPolygons);
-                    break;
-                case MeshBooleanOperation.Intersect:
-                    resultPolygons = IntersectPolygons(lhsPolygons, rhsPolygons);
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(operation), operation, null);
-            }
-
-            MeshToolMeshBuilder builder = new MeshToolMeshBuilder(attributes, subMeshCount);
-            for (int i = 0; i < resultPolygons.Count; i++)
-            {
-                builder.AddPolygon(resultPolygons[i].Vertices, resultPolygons[i].SubMesh);
-            }
-
-            return builder.ToPreviewMeshData(meshName);
-        }
 
         /// <summary>
         /// 包围盒已经分离时，尽量少读取三角形来直接构造结果。
@@ -316,10 +266,10 @@ namespace MeshTools
             {
                 case MeshBooleanOperation.Subtract:
                 {
-                    MeshToolMeshData lhsData = MeshToolGeometry.ReadTriangles(lhs, lhsToResult);
+                    MeshData lhsData = MeshToolGeometry.ParseTriangles(lhs, lhsToResult);
                     return BuildSeparatedResult(
                         lhsData,
-                        default(MeshToolMeshData),
+                        default(MeshData),
                         lhsData.Attributes,
                         lhsData.SubMeshCount,
                         operation);
@@ -327,14 +277,14 @@ namespace MeshTools
 
                 case MeshBooleanOperation.Intersect:
                 {
-                    MeshToolMeshBuilder builder = new MeshToolMeshBuilder(MeshToolAttributeMask.Normals, Mathf.Max(1, lhs.subMeshCount));
+                    MeshBuilder builder = new MeshBuilder(MeshToolAttributeMask.Normals, Mathf.Max(1, lhs.subMeshCount));
                     return builder.ToMesh("MeshBoolean_" + operation);
                 }
 
                 case MeshBooleanOperation.Union:
                 {
-                    MeshToolMeshData lhsData = MeshToolGeometry.ReadTriangles(lhs, lhsToResult);
-                    MeshToolMeshData rhsData = MeshToolGeometry.ReadTriangles(rhs, rhsToResult);
+                    MeshData lhsData = MeshToolGeometry.ParseTriangles(lhs, lhsToResult);
+                    MeshData rhsData = MeshToolGeometry.ParseTriangles(rhs, rhsToResult);
                     MeshToolAttributeMask attributes = lhsData.Attributes | rhsData.Attributes | MeshToolAttributeMask.Normals;
                     int subMeshCount = Mathf.Max(lhsData.SubMeshCount, rhsData.SubMeshCount);
                     return BuildSeparatedResult(lhsData, rhsData, attributes, subMeshCount, operation);
@@ -378,13 +328,13 @@ namespace MeshTools
         /// 两个 Mesh 的包围盒已经分离时，直接构造布尔结果，避免进入 BSP 重计算。
         /// </summary>
         private static Mesh BuildSeparatedResult(
-            MeshToolMeshData lhsData,
-            MeshToolMeshData rhsData,
+            MeshData lhsData,
+            MeshData rhsData,
             MeshToolAttributeMask attributes,
             int subMeshCount,
             MeshBooleanOperation operation)
         {
-            MeshToolMeshBuilder builder = new MeshToolMeshBuilder(attributes, subMeshCount);
+            MeshBuilder builder = new MeshBuilder(attributes, subMeshCount);
 
             switch (operation)
             {
@@ -407,45 +357,15 @@ namespace MeshTools
             return builder.ToMesh("MeshBoolean_" + operation);
         }
 
-        private static PreviewMeshData BuildSeparatedResultData(
-            MeshToolMeshData lhsData,
-            MeshToolMeshData rhsData,
-            MeshToolAttributeMask attributes,
-            int subMeshCount,
-            MeshBooleanOperation operation,
-            string meshName)
-        {
-            MeshToolMeshBuilder builder = new MeshToolMeshBuilder(attributes, subMeshCount);
-
-            switch (operation)
-            {
-                case MeshBooleanOperation.Union:
-                    AddTriangles(builder, lhsData.Triangles);
-                    AddTriangles(builder, rhsData.Triangles);
-                    break;
-
-                case MeshBooleanOperation.Subtract:
-                    AddTriangles(builder, lhsData.Triangles);
-                    break;
-
-                case MeshBooleanOperation.Intersect:
-                    break;
-
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(operation), operation, null);
-            }
-
-            return builder.ToPreviewMeshData(meshName);
-        }
 
         /// <summary>
         /// 把三角形列表直接追加到 MeshBuilder。
         /// </summary>
-        private static void AddTriangles(MeshToolMeshBuilder builder, List<MeshToolTriangle> triangles)
+        private static void AddTriangles(MeshBuilder builder, List<Triangle> triangles)
         {
             for (int i = 0; i < triangles.Count; i++)
             {
-                MeshToolTriangle triangle = triangles[i];
+                Triangle triangle = triangles[i];
                 builder.AddTriangle(triangle.A, triangle.B, triangle.C, triangle.SubMesh);
             }
         }
@@ -453,7 +373,7 @@ namespace MeshTools
         /// <summary>
         /// 根据三角形顶点计算包围盒；空列表返回 false。
         /// </summary>
-        private static bool TryGetBounds(List<MeshToolTriangle> triangles, out Bounds bounds)
+        private static bool TryGetBounds(List<Triangle> triangles, out Bounds bounds)
         {
             bounds = default(Bounds);
             if (triangles == null || triangles.Count == 0)
@@ -461,12 +381,12 @@ namespace MeshTools
                 return false;
             }
 
-            MeshToolTriangle firstTriangle = triangles[0];
+            Triangle firstTriangle = triangles[0];
             bounds = new Bounds(firstTriangle.A.Position, Vector3.zero);
 
             for (int i = 0; i < triangles.Count; i++)
             {
-                MeshToolTriangle triangle = triangles[i];
+                Triangle triangle = triangles[i];
                 bounds.Encapsulate(triangle.A.Position);
                 bounds.Encapsulate(triangle.B.Position);
                 bounds.Encapsulate(triangle.C.Position);
@@ -596,13 +516,13 @@ namespace MeshTools
         /// <summary>
         /// 把三角形数据包装成 CSG 多边形，退化三角形会被过滤掉。
         /// </summary>
-        private static List<CsgPolygon> ToPolygons(List<MeshToolTriangle> triangles)
+        private static List<CsgPolygon> ToPolygons(List<Triangle> triangles)
         {
             List<CsgPolygon> polygons = new List<CsgPolygon>(triangles.Count);
             for (int i = 0; i < triangles.Count; i++)
             {
-                MeshToolTriangle triangle = triangles[i];
-                List<MeshToolVertex> vertices = new List<MeshToolVertex>(3)
+                Triangle triangle = triangles[i];
+                List<Vertex> vertices = new List<Vertex>(3)
                 {
                     triangle.A,
                     triangle.B,
@@ -1046,7 +966,7 @@ namespace MeshTools
             /// <summary>
             /// 尝试从多边形顶点中找出一个非退化平面。
             /// </summary>
-            public static bool TryCreate(IList<MeshToolVertex> vertices, out CsgPlane plane)
+            public static bool TryCreate(IList<Vertex> vertices, out CsgPlane plane)
             {
                 // 顶点可能因为裁剪产生重复或共线，所以尝试所有三点组合。
                 for (int i = 0; i < vertices.Count - 2; i++)
@@ -1150,8 +1070,8 @@ namespace MeshTools
                 List<CsgPolygon> front,
                 List<CsgPolygon> back)
             {
-                List<MeshToolVertex> frontVertices = new List<MeshToolVertex>();
-                List<MeshToolVertex> backVertices = new List<MeshToolVertex>();
+                List<Vertex> frontVertices = new List<Vertex>();
+                List<Vertex> backVertices = new List<Vertex>();
 
                 // 逐边遍历，多边形边穿过平面时插入一个插值顶点。
                 for (int i = 0; i < polygon.Vertices.Count; i++)
@@ -1159,8 +1079,8 @@ namespace MeshTools
                     int j = (i + 1) % polygon.Vertices.Count;
                     int ti = types[i];
                     int tj = types[j];
-                    MeshToolVertex vi = polygon.Vertices[i];
-                    MeshToolVertex vj = polygon.Vertices[j];
+                    Vertex vi = polygon.Vertices[i];
+                    Vertex vj = polygon.Vertices[j];
 
                     if (ti != Back)
                     {
@@ -1182,7 +1102,7 @@ namespace MeshTools
                         }
 
                         float t = Mathf.Clamp01((W - Vector3.Dot(Normal, vi.Position)) / denominator);
-                        MeshToolVertex vertex = MeshToolVertex.Lerp(vi, vj, t);
+                        Vertex vertex = Vertex.Lerp(vi, vj, t);
                         frontVertices.Add(vertex);
                         backVertices.Add(vertex);
                     }
@@ -1205,14 +1125,14 @@ namespace MeshTools
 
         private sealed class CsgPolygon
         {
-            public List<MeshToolVertex> Vertices;
+            public List<Vertex> Vertices;
             public CsgPlane Plane;
             public int SubMesh;
 
             /// <summary>
             /// 创建一个 CSG 多边形，调用方需保证顶点和平面有效。
             /// </summary>
-            private CsgPolygon(List<MeshToolVertex> vertices, CsgPlane plane, int subMesh)
+            private CsgPolygon(List<Vertex> vertices, CsgPlane plane, int subMesh)
             {
                 Vertices = vertices;
                 Plane = plane;
@@ -1222,9 +1142,9 @@ namespace MeshTools
             /// <summary>
             /// 清理顶点并创建 CSG 多边形，退化多边形会返回 false。
             /// </summary>
-            public static bool TryCreate(IList<MeshToolVertex> sourceVertices, int subMesh, out CsgPolygon polygon)
+            public static bool TryCreate(IList<Vertex> sourceVertices, int subMesh, out CsgPolygon polygon)
             {
-                List<MeshToolVertex> vertices = CleanVertices(sourceVertices);
+                List<Vertex> vertices = CleanVertices(sourceVertices);
                 CsgPlane plane;
                 if (vertices.Count < 3 || !CsgPlane.TryCreate(vertices, out plane))
                 {
@@ -1241,7 +1161,7 @@ namespace MeshTools
             /// </summary>
             public CsgPolygon Clone()
             {
-                return new CsgPolygon(new List<MeshToolVertex>(Vertices), Plane.Clone(), SubMesh);
+                return new CsgPolygon(new List<Vertex>(Vertices), Plane.Clone(), SubMesh);
             }
 
             /// <summary>
@@ -1261,12 +1181,12 @@ namespace MeshTools
             /// <summary>
             /// 清理连续重复点和共线点，减少裁剪后生成退化面的概率。
             /// </summary>
-            private static List<MeshToolVertex> CleanVertices(IList<MeshToolVertex> source)
+            private static List<Vertex> CleanVertices(IList<Vertex> source)
             {
-                List<MeshToolVertex> result = new List<MeshToolVertex>(source.Count);
+                List<Vertex> result = new List<Vertex>(source.Count);
                 for (int i = 0; i < source.Count; i++)
                 {
-                    MeshToolVertex vertex = source[i];
+                    Vertex vertex = source[i];
                     if (result.Count == 0 || !MeshToolGeometry.SamePosition(result[result.Count - 1].Position, vertex.Position))
                     {
                         result.Add(vertex);

@@ -16,7 +16,7 @@ namespace MeshTools
         Colors = 1 << 4
     }
 
-    internal struct MeshToolVertex
+    internal struct Vertex
     {
         public Vector3 Position;
         public Vector3 Normal;
@@ -28,9 +28,9 @@ namespace MeshTools
         /// <summary>
         /// 在两点之间插值生成新顶点，用于平面切割或 CSG 分割边时补出交点顶点。
         /// </summary>
-        public static MeshToolVertex Lerp(MeshToolVertex a, MeshToolVertex b, float t)
+        public static Vertex Lerp(Vertex a, Vertex b, float t)
         {
-            MeshToolVertex vertex = new MeshToolVertex
+            Vertex vertex = new Vertex
             {
                 Position = Vector3.LerpUnclamped(a.Position, b.Position, t),
                 Normal = Vector3.LerpUnclamped(a.Normal, b.Normal, t),
@@ -74,9 +74,9 @@ namespace MeshTools
         /// <summary>
         /// 返回一个替换法线后的顶点，保留位置、UV、颜色等其它属性。
         /// </summary>
-        public MeshToolVertex WithNormal(Vector3 normal)
+        public Vertex WithNormal(Vector3 normal)
         {
-            MeshToolVertex vertex = this;
+            Vertex vertex = this;
             vertex.Normal = normal.normalized;
             return vertex;
         }
@@ -84,26 +84,26 @@ namespace MeshTools
         /// <summary>
         /// 返回翻面后的顶点，主要用于 CSG 反转实体内外侧。
         /// </summary>
-        public MeshToolVertex Flipped()
+        public Vertex Flipped()
         {
-            MeshToolVertex vertex = this;
+            Vertex vertex = this;
             vertex.Normal = -vertex.Normal;
             vertex.Tangent = new Vector4(vertex.Tangent.x, vertex.Tangent.y, vertex.Tangent.z, -vertex.Tangent.w);
             return vertex;
         }
     }
 
-    internal struct MeshToolTriangle
+    internal struct Triangle
     {
-        public MeshToolVertex A;
-        public MeshToolVertex B;
-        public MeshToolVertex C;
+        public Vertex A;
+        public Vertex B;
+        public Vertex C;
         public int SubMesh;
 
         /// <summary>
         /// 创建一个带子网格索引的三角形记录。
         /// </summary>
-        public MeshToolTriangle(MeshToolVertex a, MeshToolVertex b, MeshToolVertex c, int subMesh)
+        public Triangle(Vertex a, Vertex b, Vertex c, int subMesh)
         {
             A = a;
             B = b;
@@ -112,9 +112,9 @@ namespace MeshTools
         }
     }
 
-    internal struct MeshToolMeshData
+    internal struct MeshData
     {
-        public List<MeshToolTriangle> Triangles;
+        public List<Triangle> Triangles;
         public MeshToolAttributeMask Attributes;
         public int SubMeshCount;
     }
@@ -127,7 +127,7 @@ namespace MeshTools
         /// <summary>
         /// 读取 Unity Mesh 的三角形，并把顶点从源空间变换到结果空间。
         /// </summary>
-        public static MeshToolMeshData ReadTriangles(Mesh mesh, Matrix4x4 meshToResult)
+        public static MeshData ParseTriangles(Mesh mesh, Matrix4x4 meshToResult)
         {
             if (mesh == null)
             {
@@ -171,7 +171,7 @@ namespace MeshTools
 
             Matrix4x4 normalMatrix = meshToResult.inverse.transpose;
             int sourceSubMeshCount = Mathf.Max(1, mesh.subMeshCount);
-            List<MeshToolTriangle> triangles = new List<MeshToolTriangle>();
+            List<Triangle> triangles = new List<Triangle>();
 
             // 按子网格读取索引，方便布尔或切割后保留原来的材质槽。
             for (int subMesh = 0; subMesh < mesh.subMeshCount; subMesh++)
@@ -179,11 +179,11 @@ namespace MeshTools
                 int[] indices = mesh.GetTriangles(subMesh);
                 for (int i = 0; i + 2 < indices.Length; i += 3)
                 {
-                    MeshToolVertex a = ReadVertex(indices[i], positions, normals, tangents, uvs, uv2s, colors,
+                    Vertex a = ReadVertex(indices[i], positions, normals, tangents, uvs, uv2s, colors,
                         hasNormals, hasTangents, hasUvs, hasUv2s, hasColors, meshToResult, normalMatrix);
-                    MeshToolVertex b = ReadVertex(indices[i + 1], positions, normals, tangents, uvs, uv2s, colors,
+                    Vertex b = ReadVertex(indices[i + 1], positions, normals, tangents, uvs, uv2s, colors,
                         hasNormals, hasTangents, hasUvs, hasUv2s, hasColors, meshToResult, normalMatrix);
-                    MeshToolVertex c = ReadVertex(indices[i + 2], positions, normals, tangents, uvs, uv2s, colors,
+                    Vertex c = ReadVertex(indices[i + 2], positions, normals, tangents, uvs, uv2s, colors,
                         hasNormals, hasTangents, hasUvs, hasUv2s, hasColors, meshToResult, normalMatrix);
 
                     Vector3 faceNormal;
@@ -217,11 +217,11 @@ namespace MeshTools
                         }
                     }
 
-                    triangles.Add(new MeshToolTriangle(a, b, c, subMesh));
+                    triangles.Add(new Triangle(a, b, c, subMesh));
                 }
             }
 
-            return new MeshToolMeshData
+            return new MeshData
             {
                 Triangles = triangles,
                 Attributes = attributes,
@@ -229,7 +229,7 @@ namespace MeshTools
             };
         }
 
-        public static MeshToolMeshData ReadTriangles(PreviewMeshData mesh, Matrix4x4 meshToResult)
+        public static MeshData ParseTriangles(PreviewMeshData mesh, Matrix4x4 meshToResult)
         {
             if (mesh == null)
             {
@@ -238,15 +238,15 @@ namespace MeshTools
 
             Matrix4x4 normalMatrix = meshToResult.inverse.transpose;
             int sourceSubMeshCount = Mathf.Max(1, mesh.SubMeshTriangles.Count);
-            List<MeshToolTriangle> triangles = new List<MeshToolTriangle>();
+            List<Triangle> triangles = new List<Triangle>();
             for (int subMesh = 0; subMesh < sourceSubMeshCount; subMesh++)
             {
                 List<int> indices = mesh.SubMeshTriangles[subMesh];
                 for (int i = 0; i + 2 < indices.Count; i += 3)
                 {
-                    MeshToolVertex a = ReadVertex(indices[i], mesh.Vertices, mesh.Normals, meshToResult, normalMatrix);
-                    MeshToolVertex b = ReadVertex(indices[i + 1], mesh.Vertices, mesh.Normals, meshToResult, normalMatrix);
-                    MeshToolVertex c = ReadVertex(indices[i + 2], mesh.Vertices, mesh.Normals, meshToResult, normalMatrix);
+                    Vertex a = ReadVertex(indices[i], mesh.Vertices, mesh.Normals, meshToResult, normalMatrix);
+                    Vertex b = ReadVertex(indices[i + 1], mesh.Vertices, mesh.Normals, meshToResult, normalMatrix);
+                    Vertex c = ReadVertex(indices[i + 2], mesh.Vertices, mesh.Normals, meshToResult, normalMatrix);
 
                     if (!TryGetFaceNormal(a.Position, b.Position, c.Position, out Vector3 faceNormal))
                     {
@@ -266,11 +266,11 @@ namespace MeshTools
                         c.Normal = faceNormal;
                     }
 
-                    triangles.Add(new MeshToolTriangle(a, b, c, subMesh));
+                    triangles.Add(new Triangle(a, b, c, subMesh));
                 }
             }
 
-            return new MeshToolMeshData
+            return new MeshData
             {
                 Triangles = triangles,
                 Attributes = MeshToolAttributeMask.Normals,
@@ -345,7 +345,7 @@ namespace MeshTools
         /// <summary>
         /// 从源 Mesh 的顶点数组中读取单个顶点，并完成位置、法线、切线的空间变换。
         /// </summary>
-        private static MeshToolVertex ReadVertex(
+        private static Vertex ReadVertex(
             int index,
             Vector3[] positions,
             Vector3[] normals,
@@ -361,7 +361,7 @@ namespace MeshTools
             Matrix4x4 meshToResult,
             Matrix4x4 normalMatrix)
         {
-            MeshToolVertex vertex = new MeshToolVertex
+            Vertex vertex = new Vertex
             {
                 Position = meshToResult.MultiplyPoint3x4(positions[index]),
                 Normal = Vector3.zero,
@@ -396,7 +396,7 @@ namespace MeshTools
             return vertex;
         }
 
-        private static MeshToolVertex ReadVertex(
+        private static Vertex ReadVertex(
             int index,
             List<Vector3> positions,
             List<Vector3> normals,
@@ -409,7 +409,7 @@ namespace MeshTools
                 normal.Normalize();
             }
 
-            return new MeshToolVertex
+            return new Vertex
             {
                 Position = meshToResult.MultiplyPoint3x4(positions[index]),
                 Normal = normal,
@@ -421,7 +421,7 @@ namespace MeshTools
         }
     }
 
-    internal sealed class MeshToolMeshBuilder
+    internal sealed class MeshBuilder
     {
         private readonly MeshToolAttributeMask attributes;
         private readonly List<Vector3> positions = new List<Vector3>();
@@ -435,7 +435,7 @@ namespace MeshTools
         /// <summary>
         /// 创建结果 Mesh 构建器，并预先准备需要的子网格列表。
         /// </summary>
-        public MeshToolMeshBuilder(MeshToolAttributeMask attributes, int subMeshCount)
+        public MeshBuilder(MeshToolAttributeMask attributes, int subMeshCount)
         {
             this.attributes = attributes | MeshToolAttributeMask.Normals;
             int safeSubMeshCount = Mathf.Max(1, subMeshCount);
@@ -464,7 +464,7 @@ namespace MeshTools
         /// <summary>
         /// 向指定子网格追加一个三角形，退化三角形会被跳过。
         /// </summary>
-        public void AddTriangle(MeshToolVertex a, MeshToolVertex b, MeshToolVertex c, int subMesh)
+        public void AddTriangle(Vertex a, Vertex b, Vertex c, int subMesh)
         {
             if (!MeshToolGeometry.IsValidTriangle(a.Position, b.Position, c.Position))
             {
@@ -486,14 +486,14 @@ namespace MeshTools
         /// <summary>
         /// 用扇形三角化方式追加一个凸多边形或近似凸多边形。
         /// </summary>
-        public void AddPolygon(IList<MeshToolVertex> polygon, int subMesh)
+        public void AddPolygon(IList<Vertex> polygon, int subMesh)
         {
             if (polygon == null || polygon.Count < 3)
             {
                 return;
             }
 
-            MeshToolVertex anchor = polygon[0];
+            Vertex anchor = polygon[0];
             for (int i = 1; i + 1 < polygon.Count; i++)
             {
                 AddTriangle(anchor, polygon[i], polygon[i + 1], subMesh);
@@ -585,7 +585,7 @@ namespace MeshTools
         /// <summary>
         /// 追加一个顶点到各属性数组，并返回它的新索引。
         /// </summary>
-        private int AddVertex(MeshToolVertex vertex)
+        private int AddVertex(Vertex vertex)
         {
             int index = positions.Count;
             positions.Add(vertex.Position);

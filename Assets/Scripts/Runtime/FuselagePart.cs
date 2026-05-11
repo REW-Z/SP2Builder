@@ -96,25 +96,19 @@ public class FuselagePart : Part
 
 	// 重建机身预览网格，包括端盖、切割结果和共享材质。 / Rebuild the fuselage preview mesh, including end caps, cuts, and shared material.
 	public override void RefreshPreview()
-	{
-		if (RequestCraftPreviewRebuild())
+    {
+        if (RequestCraftPreviewRebuild())
 		{
 			return;
 		}
 
 		base.RefreshPreview();
 
-		using(new ProfilerSample("CanonicalizeSections"))
-		{
-            CanonicalizeSections();
-        }
+        CanonicalizeSections();
 
-        using(new ProfilerSample("EnsureComponents"))
-		{
-            EnsureComponents();
-		}
+        EnsureComponents();
 
-		bool hasTargetedCarvers;
+        bool hasTargetedCarvers;
 		bool hasSectionCutting;
 		bool capRear;
 		bool capFront;
@@ -122,7 +116,7 @@ public class FuselagePart : Part
 		bool applySectionCutting;
         bool rsTryUpdateExistingLoftMesh;
 
-        using(new ProfilerSample("DetermineCarvingAndCapping"))
+        using(new SampleProfiler("DetermineCarvingAndCapping"))
         {
             hasTargetedCarvers = HasTargetedCarvers();
             hasSectionCutting = HasSectionCutting(_rearSection) || HasSectionCutting(_frontSection);
@@ -143,27 +137,17 @@ public class FuselagePart : Part
 		Mesh previousMesh = _meshFilter.sharedMesh;
 		Mesh mesh = null;
 
+        //=============== 搬到工作线程 =================
+        {
+            // 先生成 loft，再做后续切削，避免法线在切削前后不一致。 / Build the loft before applying downstream carvers so normals stay consistent.
+            mesh = FuselageGeometry.BuildLoft(_rearSection, _frontSection, _offset, _visualStyle == FuselageVisualStyle.Hollow, capRear, capFront, applySectionCutting);
 
-		//=============== 搬到工作线程 =================
-		try
-		{
-
-			// 先生成 loft，再做后续切削，避免法线在切削前后不一致。 / Build the loft before applying downstream carvers so normals stay consistent.
-			mesh = FuselageGeometry.BuildLoft(_rearSection, _frontSection, _offset, _visualStyle == FuselageVisualStyle.Hollow, capRear, capFront, applySectionCutting);
-
-			if(applyTargetedCarvers)
-			{
-				//切削    
-				mesh = ApplyTargetedCarvers(mesh);
-			}
-		}
-		catch(Exception exception)
-		{
-			Debug.LogException(exception, this);
-			DestroyOwnedObject(mesh);
-			mesh = null;
-		}
-
+            if(applyTargetedCarvers)
+            {
+                //切削    
+                mesh = ApplyTargetedCarvers(mesh);
+            }
+        }
 
         //==========================================
 
@@ -646,14 +630,10 @@ public class FuselagePart : Part
 				continue;
 			}
 
+			//布尔Subtract    
+			Mesh next = MeshTools.MeshBoolean.Subtract(carved, transform, cutterMesh, carverComponent.transform, transform);
 
-			Mesh next;
-            using(new ProfilerSample("MeshBoolean.Sub"))
-			{
-                next = MeshTools.MeshBoolean.Subtract(carved, transform, cutterMesh, carverComponent.transform, transform);
-            }
-
-			DestroyOwnedObject(cutterMesh);
+            DestroyOwnedObject(cutterMesh);
 			if (next == null || ReferenceEquals(next, carved))
 			{
 				continue;
