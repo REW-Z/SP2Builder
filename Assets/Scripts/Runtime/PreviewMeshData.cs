@@ -37,33 +37,6 @@ internal sealed class PreviewMeshData
 		SubMeshTriangles[0].AddRange(triangles);
 	}
 
-	public static PreviewMeshData FromMesh(Mesh mesh, Matrix4x4 meshToResult, string name = null)
-	{
-		PreviewMeshData data = new PreviewMeshData(name ?? mesh?.name ?? "PreviewMesh");
-		if (mesh == null)
-		{
-			return data;
-		}
-
-		Vector3[] vertices = mesh.vertices;
-		Vector3[] normals = mesh.normals;
-		Matrix4x4 normalMatrix = meshToResult.inverse.transpose;
-		for (int i = 0; i < vertices.Length; i++)
-		{
-			data.Vertices.Add(meshToResult.MultiplyPoint3x4(vertices[i]));
-			Vector3 normal = normals != null && normals.Length == vertices.Length ? normalMatrix.MultiplyVector(normals[i]) : Vector3.up;
-			data.Normals.Add(normal.sqrMagnitude > 0.000001f ? normal.normalized : Vector3.up);
-		}
-
-		data.SubMeshTriangles.Clear();
-		int subMeshCount = Mathf.Max(1, mesh.subMeshCount);
-		for (int subMesh = 0; subMesh < subMeshCount; subMesh++)
-		{
-			data.SubMeshTriangles.Add(new List<int>(mesh.GetTriangles(subMesh)));
-		}
-		return data;
-	}
-
 	public Mesh ToMesh()
 	{
 		Mesh mesh = new Mesh();

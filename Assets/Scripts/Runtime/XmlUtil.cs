@@ -323,7 +323,7 @@ internal static class PreviewMaterialFactory
 		}
 
 		Craft craft = part.GetComponentInParent<Craft>();
-		if (craft == null || !craft.TryGetThemeMaterial(part.PrimaryMaterialId, out CraftThemeMaterial themeMaterial))
+		if (!craft.TryGetThemeMaterial(part.PrimaryMaterialId, out CraftThemeMaterial themeMaterial))
 		{
 			return false;
 		}

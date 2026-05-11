@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Threading;
 using System.Xml.Linq;
 using UnityEngine;
 #if UNITY_EDITOR
@@ -60,8 +59,6 @@ public class FuselagePart : Part
 
 	private MeshRenderer _meshRenderer;
 
-	private int _previewBuildVersion;
-
 	#if UNITY_EDITOR
 	protected override double PreviewRefreshDelaySeconds => EditorPreviewRefreshDelaySeconds;
 	#endif
@@ -100,7 +97,6 @@ public class FuselagePart : Part
 	// 重建机身预览网格，包括端盖、切割结果和共享材质。 / Rebuild the fuselage preview mesh, including end caps, cuts, and shared material.
 	public override void RefreshPreview()
 	{
-		int previewBuildVersion = NextPreviewBuildVersion();
 		if (RequestCraftPreviewRebuild())
 		{
 			return;
@@ -204,150 +200,6 @@ public class FuselagePart : Part
 		return true;
 	}
 
-	private int NextPreviewBuildVersion()
-	{
-		unchecked
-		{
-			_previewBuildVersion++;
-			if (_previewBuildVersion == 0)
-			{
-				_previewBuildVersion = 1;
-			}
-			return _previewBuildVersion;
-		}
-	}
-
-	private void CancelAsyncPreviewBuild()
-	{
-		NextPreviewBuildVersion();
-		PreviewMeshBuildScheduler.Cancel(GetInstanceID());
-	}
-
-	private void QueueAsyncFullPreviewIfNeeded(bool lightweightPreview, int version, bool capRear, bool capFront)
-	{
-		if (!lightweightPreview)
-		{
-			return;
-		}
-
-		bool hasSectionCutting = HasSectionCutting(_rearSection) || HasSectionCutting(_frontSection);
-		List<FuselageCarverSnapshot> carvers = CaptureTargetedCarvers();
-		if (!hasSectionCutting && carvers.Count == 0)
-		{
-			return;
-		}
-
-		FuselagePreviewBuildSnapshot snapshot = new FuselagePreviewBuildSnapshot(
-			_rearSection,
-			_frontSection,
-			_offset,
-			_visualStyle == FuselageVisualStyle.Hollow,
-			capRear,
-			capFront,
-			carvers);
-
-		int ownerId = GetInstanceID();
-		PreviewMeshBuildScheduler.Schedule(
-			ownerId,
-			version,
-			token => BuildPreviewData(snapshot, token),
-			ApplyAsyncPreview,
-			HandleAsyncPreviewFailure);
-	}
-
-	private List<FuselageCarverSnapshot> CaptureTargetedCarvers()
-	{
-		List<FuselageCarverSnapshot> carvers = new List<FuselageCarverSnapshot>();
-		Craft craft = GetOwningCraft();
-		if (craft == null)
-		{
-			return carvers;
-		}
-
-		foreach (IFuselageCarverData carver in craft.GetComponentsInChildren<MonoBehaviour>(includeInactive: true).OfType<IFuselageCarverData>())
-		{
-			if (ReferenceEquals(carver, this))
-			{
-				continue;
-			}
-
-			if (!carver.TryGetCutMeshData(this, out PreviewMeshData meshData, out Matrix4x4 cutterToTarget) || meshData == null || meshData.Vertices.Count == 0)
-			{
-				continue;
-			}
-
-			carvers.Add(new FuselageCarverSnapshot(meshData, cutterToTarget));
-		}
-
-		return carvers;
-	}
-
-	private static PreviewMeshData BuildPreviewData(FuselagePreviewBuildSnapshot snapshot, CancellationToken token)
-	{
-		token.ThrowIfCancellationRequested();
-		PreviewMeshData data = FuselageGeometry.BuildLoftData(
-			snapshot.RearSection,
-			snapshot.FrontSection,
-			snapshot.Offset,
-			snapshot.Hollow,
-			snapshot.CapRear,
-			snapshot.CapFront,
-			applySectionCutting: true);
-
-		for (int i = 0; i < snapshot.Carvers.Count; i++)
-		{
-			token.ThrowIfCancellationRequested();
-			FuselageCarverSnapshot carver = snapshot.Carvers[i];
-			data = MeshTools.MeshBoolean.Evaluate(
-				data,
-				Matrix4x4.identity,
-				carver.MeshData,
-				carver.CutterToTarget,
-				MeshTools.MeshBooleanOperation.Subtract);
-		}
-
-		token.ThrowIfCancellationRequested();
-		return data;
-	}
-
-	private void ApplyAsyncPreview(int version, PreviewMeshData meshData)
-	{
-		if (this == null || version != _previewBuildVersion || meshData == null)
-		{
-			return;
-		}
-
-		EnsureComponents();
-		Mesh previousMesh = _meshFilter.sharedMesh;
-		Mesh nextMesh = PreviewMeshPool.CreateMesh(meshData);
-		_meshFilter.sharedMesh = nextMesh;
-		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
-		if (previousMesh != null && !ReferenceEquals(previousMesh, nextMesh))
-		{
-			PreviewMeshPool.Release(previousMesh);
-		}
-
-		Craft craft = GetOwningCraft();
-		if (craft != null)
-		{
-			FuselagePart.ApplyNeighbourSmoothing(craft, new HashSet<int> { PartId });
-		}
-
-	#if UNITY_EDITOR
-		SceneView.RepaintAll();
-	#endif
-	}
-
-	private void HandleAsyncPreviewFailure(int version, Exception exception)
-	{
-		if (this == null || version != _previewBuildVersion)
-		{
-			return;
-		}
-
-		Debug.LogException(exception, this);
-	}
-
 	private static bool HasSectionCutting(FuselageSectionSettings section)
 	{
 		return section.GetCutEnabled(0)
@@ -359,11 +211,6 @@ public class FuselagePart : Part
 	private bool HasTargetedCarvers()
 	{
 		Craft craft = GetOwningCraft();
-		if (craft == null)
-		{
-			return false;
-		}
-
 		foreach (Part part in craft.GetComponentsInChildren<Part>(includeInactive: true))
 		{
 			if (part == this || part is not IFuselageCarver)
@@ -380,64 +227,11 @@ public class FuselagePart : Part
 		return false;
 	}
 
-	private readonly struct FuselagePreviewBuildSnapshot
-	{
-		public FuselagePreviewBuildSnapshot(
-			FuselageSectionSettings rearSection,
-			FuselageSectionSettings frontSection,
-			Vector3 offset,
-			bool hollow,
-			bool capRear,
-			bool capFront,
-			List<FuselageCarverSnapshot> carvers)
-		{
-			RearSection = rearSection;
-			FrontSection = frontSection;
-			Offset = offset;
-			Hollow = hollow;
-			CapRear = capRear;
-			CapFront = capFront;
-			Carvers = carvers ?? new List<FuselageCarverSnapshot>();
-		}
-
-		public FuselageSectionSettings RearSection { get; }
-
-		public FuselageSectionSettings FrontSection { get; }
-
-		public Vector3 Offset { get; }
-
-		public bool Hollow { get; }
-
-		public bool CapRear { get; }
-
-		public bool CapFront { get; }
-
-		public List<FuselageCarverSnapshot> Carvers { get; }
-	}
-
-	private readonly struct FuselageCarverSnapshot
-	{
-		public FuselageCarverSnapshot(PreviewMeshData meshData, Matrix4x4 cutterToTarget)
-		{
-			MeshData = meshData;
-			CutterToTarget = cutterToTarget;
-		}
-
-		public PreviewMeshData MeshData { get; }
-
-		public Matrix4x4 CutterToTarget { get; }
-	}
-
 	// 在编辑器首次排队重建前，先补齐未序列化的截面派生状态。 / Normalize nonserialized section state before the editor schedules an initial rebuild.
 	protected override void OnEnable()
 	{
 		CanonicalizeSections();
 		base.OnEnable();
-	}
-
-	private void OnDisable()
-	{
-		CancelAsyncPreviewBuild();
 	}
 
 	// 在编辑器校验排队重建前，先归一化截面状态。 / Normalize section state before editor validation queues a rebuild.
@@ -490,11 +284,6 @@ public class FuselagePart : Part
 
 	public static void ApplyNeighbourSmoothing(Craft craft, IReadOnlyCollection<int> affectedPartIds)
 	{
-		if (craft == null)
-		{
-			return;
-		}
-
 		FuselagePart[] fuselages = craft.GetComponentsInChildren<FuselagePart>(includeInactive: true);
 		Dictionary<FuselagePart, Vector3[]> baseNormals = new Dictionary<FuselagePart, Vector3[]>(fuselages.Length);
 		Dictionary<FuselagePart, Vector3[]> workingNormals = new Dictionary<FuselagePart, Vector3[]>(fuselages.Length);
@@ -798,7 +587,7 @@ public class FuselagePart : Part
 	private Mesh ApplyTargetedCarvers(Mesh source)
 	{
 		Craft craft = GetOwningCraft();
-		if (craft == null || source == null)
+		if (source == null)
 		{
 			return source;
 		}
@@ -857,11 +646,6 @@ public class FuselagePart : Part
 		}
 
 		Craft craft = GetOwningCraft();
-		if (craft == null)
-		{
-			return false;
-		}
-
 		if (craft.HasConnectionData)
 		{
 			return false;
@@ -1134,14 +918,6 @@ public class FuselagePart : Part
 		}
 
 		return false;
-	}
-
-	private static bool AreEndsConnected(FuselagePart a, bool aFront, FuselagePart b, bool bFront)
-	{
-		int aAttachPointId = aFront ? 1 : 0;
-		int bAttachPointId = bFront ? 1 : 0;
-		return a.HasDirectConnection(aAttachPointId, b, bAttachPointId)
-			|| b.HasDirectConnection(bAttachPointId, a, aAttachPointId);
 	}
 
 	private Vector3 GetMidSectionSidePoint(int sideIndex)

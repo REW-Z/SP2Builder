@@ -76,14 +76,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 		if (GUILayout.Button("Rebuild Preview", GUILayout.Height(24f)))
 		{
 			Craft craft = fuselage.GetComponentInParent<Craft>();
-			if (craft != null)
-			{
-				craft.RebuildPreviewForPart(fuselage, lightweight: false);
-			}
-			else
-			{
-				fuselage.RefreshPreview();
-			}
+			craft.RebuildPreviewForPart(fuselage, lightweight: false);
 			EditorUtility.SetDirty(target);
 			SceneView.RepaintAll();
 		}
@@ -118,14 +111,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 		}
 
 		Craft craft = fuselage.GetComponentInParent<Craft>();
-		if (craft != null)
-		{
-			craft.RebuildPreviewForPart(fuselage);
-		}
-		else
-		{
-			fuselage.RefreshPreview();
-		}
+		craft.RebuildPreviewForPart(fuselage);
 		EditorUtility.SetDirty(fuselage);
 		SceneView.RepaintAll();
 	}
@@ -337,15 +323,6 @@ public class FuselagePartEditor : UnityEditor.Editor
 		});
 	}
 
-	// 用逐分量行的方式绘制 Bool4Value。 / Draw a labeled Bool4Value group using one line per component.
-	private static void DrawBool4Group(SerializedProperty property, string label, string[] itemNames)
-	{
-		DrawValueGroup(property, label, itemNames, (itemProperty, itemLabel) =>
-		{
-			EditorGUILayout.PropertyField(itemProperty, new GUIContent(itemLabel));
-		});
-	}
-
 	// 复用四元辅助结构的通用绘制模式。 / Share the repeated four-component drawing pattern across the helper value structs.
 	private static void DrawValueGroup(SerializedProperty property, string label, string[] itemNames, System.Action<SerializedProperty, string> drawValue)
 	{
@@ -521,11 +498,6 @@ internal static class PartInspectorUtility
 		}
 
 		Craft craft = part.GetComponentInParent<Craft>();
-		if (craft == null)
-		{
-			return;
-		}
-
 		EditorGUILayout.Space(8f);
 		EditorGUILayout.LabelField("Part Actions", EditorStyles.boldLabel);
 		EditorGUILayout.BeginHorizontal();
@@ -569,16 +541,9 @@ internal static class PartInspectorUtility
 		}
 
 		Craft craft = part.GetComponentInParent<Craft>();
-		if (craft != null)
-		{
-			double delaySeconds = part is FuselagePart ? FuselagePart.EditorPreviewRefreshDelaySeconds : 0.08d;
-			craft.QueuePreviewRebuildForPart(part, delaySeconds, lightweight);
-			EditorUtility.SetDirty(craft);
-		}
-		else
-		{
-			part.RefreshPreview();
-		}
+		double delaySeconds = part is FuselagePart ? FuselagePart.EditorPreviewRefreshDelaySeconds : 0.08d;
+		craft.QueuePreviewRebuildForPart(part, delaySeconds, lightweight);
+		EditorUtility.SetDirty(craft);
 
 		EditorUtility.SetDirty(part);
 		EditorApplication.QueuePlayerLoopUpdate();
@@ -599,26 +564,10 @@ internal static class PartInspectorUtility
 		SceneView.RepaintAll();
 	}
 
-	private static void DrawMaterialSwatch(Color color)
-	{
-		Rect rect = EditorGUILayout.GetControlRect(false, 18f);
-		Rect swatch = new Rect(rect.x + EditorGUIUtility.labelWidth, rect.y + 2f, 42f, rect.height - 4f);
-		EditorGUI.LabelField(new Rect(rect.x, rect.y, EditorGUIUtility.labelWidth - 4f, rect.height), "Preview Color");
-		EditorGUI.DrawRect(swatch, color);
-		EditorGUI.LabelField(new Rect(swatch.xMax + 8f, rect.y, rect.width - swatch.width - EditorGUIUtility.labelWidth - 8f, rect.height), $"#{ColorUtility.ToHtmlStringRGBA(color)}");
-	}
-
 	private static void RefreshPartPreview(Part part, Craft craft)
 	{
-		if (craft != null)
-		{
-			craft.RebuildPreviewForPart(part);
-			EditorUtility.SetDirty(craft);
-		}
-		else
-		{
-			part.RefreshPreview();
-		}
+		craft.RebuildPreviewForPart(part);
+		EditorUtility.SetDirty(craft);
 
 		EditorUtility.SetDirty(part);
 		SceneView.RepaintAll();
@@ -626,11 +575,7 @@ internal static class PartInspectorUtility
 
 	private static void RegisterPartUndo(Part part, Craft craft, string actionName)
 	{
-		if (craft != null)
-		{
-			Undo.RecordObject(craft, actionName);
-		}
-
+		Undo.RecordObject(craft, actionName);
 		Undo.RecordObject(part, actionName);
 	}
 }
@@ -647,10 +592,6 @@ internal static class PartConnectionEditorUtility
 		Craft craft = part.GetComponentInParent<Craft>();
 		EditorGUILayout.Space(10f);
 		EditorGUILayout.LabelField("Attach Point Connections", EditorStyles.boldLabel);
-		if (craft == null)
-		{
-			EditorGUILayout.HelpBox("This Part is not under a Craft root, so connected part ids cannot be resolved.", MessageType.Info);
-		}
 
 		IReadOnlyList<PartConnectionEndpoint> endpoints = part.ConnectionEndpoints;
 		bool changed = false;
@@ -694,7 +635,7 @@ internal static class PartConnectionEditorUtility
 		if (GUILayout.Button("Add Connection", GUILayout.Height(22f)))
 		{
 			RegisterUndo(part, craft, "Add Part Connection");
-			int connectionId = craft != null ? craft.AllocateConnectionId() : 0;
+			int connectionId = craft.AllocateConnectionId();
 			part.AddConnectionEndpoint(connectionId, isPartAEndpoint: true, localAttachPointId: 0, connectedPartId: 0, connectedAttachPointId: 0);
 			changed = true;
 		}
@@ -704,17 +645,14 @@ internal static class PartConnectionEditorUtility
 			return;
 		}
 
-		if (craft != null)
-		{
-			craft.SynchronizeConnectionsFrom(part);
-			EditorUtility.SetDirty(craft);
-		}
+		craft.SynchronizeConnectionsFrom(part);
+		EditorUtility.SetDirty(craft);
 		PartInspectorUtility.QueuePreviewRefresh(part);
 	}
 
 	private static void DrawConnectionResolution(Part part, Craft craft, PartConnectionEndpoint endpoint)
 	{
-		if (craft == null || endpoint == null || endpoint.ConnectedPartId <= 0)
+		if (endpoint == null || endpoint.ConnectedPartId <= 0)
 		{
 			return;
 		}
@@ -731,11 +669,7 @@ internal static class PartConnectionEditorUtility
 
 	private static void RegisterUndo(Part part, Craft craft, string actionName)
 	{
-		if (craft != null)
-		{
-			Undo.RecordObject(craft, actionName);
-		}
-
+		Undo.RecordObject(craft, actionName);
 		Undo.RecordObject(part, actionName);
 	}
 }

@@ -5,7 +5,7 @@ using UnityEngine;
 
 [ExecuteAlways]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
-public class BayPart : Part, IFuselageCarver, IFuselageCarverData
+public class BayPart : Part, IFuselageCarver
 {
     private const float WindowEquivalentCutDepth = 0.3f;
 
@@ -100,20 +100,6 @@ public class BayPart : Part, IFuselageCarver, IFuselageCarverData
 
         mesh = FuselageCarverUtility.BuildSolidCutMesh(BuildOutline(), GetCutDepth(), "ProceduralBayCut");
         return mesh.vertexCount > 0;
-    }
-
-    bool IFuselageCarverData.TryGetCutMeshData(FuselagePart target, out PreviewMeshData meshData, out Matrix4x4 cutterToTarget)
-    {
-        meshData = null;
-        cutterToTarget = Matrix4x4.identity;
-        if(!FuselageCarverUtility.CanCarveTarget(this, target))
-        {
-            return false;
-        }
-
-        meshData = FuselageCarverUtility.BuildSolidCutMeshData(BuildOutline(), GetCutDepth(), "ProceduralBayCut");
-        cutterToTarget = target.transform.worldToLocalMatrix * transform.localToWorldMatrix;
-        return meshData.Vertices.Count > 0;
     }
 
     private List<Vector2> BuildOutline()

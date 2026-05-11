@@ -100,12 +100,6 @@ public struct FuselageSectionSettings
 		return CutEnabled[index];
 	}
 
-	// 设置指定方向的 cut 启用状态；顺序为 Top/Right/Bottom/Left。 / Set one cut enable flag in Top/Right/Bottom/Left order.
-	public void SetCutEnabled(int index, bool value)
-	{
-		CutEnabled[index] = value;
-	}
-
 	// 读取指定方向的 cut 数值；顺序为 Top/Right/Bottom/Left。 / Read one cut value in Top/Right/Bottom/Left order.
 	public readonly float GetCutValue(int index)
 	{
@@ -308,10 +302,6 @@ internal static class FuselageGeometry
 				Mathf.Lerp(a.MaxY, b.MaxY, t));
 		}
 
-		public ClipBounds Offset(Vector2 delta)
-		{
-			return new ClipBounds(MinX - delta.x, MinY - delta.y, MaxX - delta.x, MaxY - delta.y);
-		}
 	}
 
 	private sealed class RingProfile
@@ -588,32 +578,6 @@ internal static class FuselageGeometry
 		PreviewMeshData meshData = new PreviewMeshData(meshName, vertices, normals, triangles);
 
 		return meshData;
-	}
-
-	// 为 modifier 零件构建一个快速的梯形挤出预览网格。 / Build a quick extruded trapezoid preview mesh for modifier parts.
-	public static Mesh BuildTrapezoidPrism(float upperLeft, float upperRight, float lowerLeft, float lowerRight, float height, float depth, float cornerRadius, int cornerSamples)
-	{
-		List<Vector2> outline = BuildPreviewRoundedPolygon(new List<Vector2>
-		{
-			new Vector2(upperRight, height * 0.5f),
-			new Vector2(lowerRight, -height * 0.5f),
-			new Vector2(lowerLeft, -height * 0.5f),
-			new Vector2(upperLeft, height * 0.5f)
-		}, Mathf.Max(0f, cornerRadius), Mathf.Max(2, cornerSamples));
-		return BuildExtrudedPolygon(outline, depth);
-	}
-
-	// 为 modifier 零件构建一个快速的圆角盒体预览网格。 / Build a quick rounded-box preview mesh for modifier parts.
-	public static Mesh BuildRoundedBox(float width, float height, float depth, float cornerRadius, int cornerSamples)
-	{
-		List<Vector2> outline = BuildPreviewRoundedPolygon(new List<Vector2>
-		{
-			new Vector2(width * 0.5f, height * 0.5f),
-			new Vector2(width * 0.5f, -height * 0.5f),
-			new Vector2(-width * 0.5f, -height * 0.5f),
-			new Vector2(-width * 0.5f, height * 0.5f)
-		}, Mathf.Max(0f, cornerRadius), Mathf.Max(2, cornerSamples));
-		return BuildExtrudedPolygon(outline, depth);
 	}
 
 	// 当裁切把曲线截面削得过多时，回退到简单梯形轮廓。 / Fall back to a plain trapezium outline when clipping removes too much of the curved profile.
@@ -1210,67 +1174,6 @@ internal static class FuselageGeometry
 		return Vector2.Scale(normalized, section.HalfSize);
 	}
 
-	private static Mesh BuildExtrudedPolygon(List<Vector2> outline, float depth)
-	{
-		Mesh mesh = new Mesh
-		{
-			name = "ExtrudedPolygon"
-		};
-		List<Vector3> vertices = new List<Vector3>(outline.Count * 2 + 2);
-		List<int> triangles = new List<int>(outline.Count * 12);
-		RingProfile back = new RingProfile(EnsureClockwise(new List<Vector2>(outline)), new Vector3(0f, 0f, -depth * 0.5f));
-		RingProfile front = new RingProfile(EnsureClockwise(new List<Vector2>(outline)), new Vector3(0f, 0f, depth * 0.5f));
-		AddRing(vertices, back);
-		AddRing(vertices, front);
-		ConnectRings(triangles, back, front, reverseQuads: false);
-		CapRing(vertices, triangles, back, flip: true);
-		CapRing(vertices, triangles, front, flip: false);
-		mesh.SetVertices(vertices);
-		mesh.SetTriangles(triangles, 0);
-		mesh.RecalculateNormals();
-		mesh.RecalculateBounds();
-		return mesh;
-	}
-
-	private static List<Vector2> BuildPreviewRoundedPolygon(List<Vector2> polygon, float requestedRadius, int cornerSamples)
-	{
-		polygon = EnsureClockwise(polygon);
-		List<Vector2> points = new List<Vector2>(polygon.Count * cornerSamples);
-		for (int i = 0; i < polygon.Count; i++)
-		{
-			Vector2 previous = polygon[(i - 1 + polygon.Count) % polygon.Count];
-			Vector2 current = polygon[i];
-			Vector2 next = polygon[(i + 1) % polygon.Count];
-			Vector2 dirPrev = (previous - current).normalized;
-			Vector2 dirNext = (next - current).normalized;
-			float angle = Mathf.Acos(Mathf.Clamp(Vector2.Dot(dirPrev, dirNext), -0.9999f, 0.9999f));
-			float limit = 0.5f * Mathf.Min(Vector2.Distance(previous, current), Vector2.Distance(current, next)) * Mathf.Tan(angle * 0.5f);
-			float radius = Mathf.Min(requestedRadius, limit);
-			if (radius <= Epsilon)
-			{
-				AddUnique(points, current);
-				continue;
-			}
-
-			float tangentDistance = radius / Mathf.Tan(angle * 0.5f);
-			Vector2 start = current + dirPrev * tangentDistance;
-			Vector2 end = current + dirNext * tangentDistance;
-			Vector2 bisector = (dirPrev + dirNext).normalized;
-			float centerDistance = radius / Mathf.Sin(angle * 0.5f);
-			Vector2 center = current + bisector * centerDistance;
-			float startAngle = Mathf.Atan2(start.y - center.y, start.x - center.x);
-			float endAngle = Mathf.Atan2(end.y - center.y, end.x - center.x);
-			for (int sample = 0; sample < cornerSamples; sample++)
-			{
-				float t = sample / (float)(cornerSamples - 1);
-				float angleSample = Mathf.LerpAngle(startAngle * Mathf.Rad2Deg, endAngle * Mathf.Rad2Deg, t) * Mathf.Deg2Rad;
-				AddUnique(points, center + new Vector2(Mathf.Cos(angleSample), Mathf.Sin(angleSample)) * radius);
-			}
-		}
-		RemoveNearDuplicateLoopPoints(points);
-		return EnsureClockwise(points);
-	}
-
 	private static void AddRing(List<Vector3> vertices, RingProfile ring)
 	{
 		ring.MeshIndicesIn = new int[ring.Points.Count];
@@ -1777,30 +1680,6 @@ internal static class FuselageGeometry
 		}
 
 		return result;
-	}
-
-	private static void CapRing(List<Vector3> vertices, List<int> triangles, RingProfile ring, bool flip)
-	{
-		Vector2 centroid2D = ComputePolygonCentroid(ring.Points);
-		int centerIndex = vertices.Count;
-		vertices.Add(ring.Center + new Vector3(centroid2D.x, centroid2D.y, 0f));
-		int start = vertices.Count;
-		for (int i = 0; i < ring.Points.Count; i++)
-		{
-			vertices.Add(ring.Center + new Vector3(ring.Points[i].x, ring.Points[i].y, 0f));
-		}
-		for (int i = 0; i < ring.Points.Count; i++)
-		{
-			int next = (i + 1) % ring.Points.Count;
-			if (flip)
-			{
-				triangles.Add(centerIndex); triangles.Add(start + next); triangles.Add(start + i);
-			}
-			else
-			{
-				triangles.Add(centerIndex); triangles.Add(start + i); triangles.Add(start + next);
-			}
-		}
 	}
 
 	private static int[] FindClosestLinks(List<float> source, List<float> target)

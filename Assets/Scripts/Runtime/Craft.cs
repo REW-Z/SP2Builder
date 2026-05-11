@@ -164,7 +164,6 @@ public class Craft : MonoBehaviour
 		if (!Application.isPlaying)
 		{
 			ResetPreviewRebuildState();
-			PreviewMeshBuildScheduler.CancelAll();
 		}
 	#endif
 
@@ -341,19 +340,6 @@ public class Craft : MonoBehaviour
 		Part clone = CreatePartFromXml(cloneElement, AllocateOrderIndex());
 		RebuildAllPreviews();
 		return clone;
-	}
-
-	public FuselagePart CreateFuselagePart()
-	{
-		XElement partElement = new XElement("Part");
-		partElement.SetAttributeValue("id", AllocatePartId());
-		partElement.SetAttributeValue("partType", "JFuselage-1");
-		partElement.SetAttributeValue("position", XmlUtil.FormatVector3(Vector3.zero));
-		partElement.SetAttributeValue("rotation", XmlUtil.FormatVector3(Vector3.zero));
-		partElement.SetAttributeValue("materials", "0,0,0,0,0,0");
-		Part part = CreatePartFromXml(partElement, AllocateOrderIndex());
-		RebuildAllPreviews();
-		return part as FuselagePart;
 	}
 
 	public bool TryGetThemeMaterial(int materialId, out CraftThemeMaterial material)
@@ -986,39 +972,6 @@ public class Craft : MonoBehaviour
 			connectionsElement.Add(element);
 		}
 		assemblyElement.Add(connectionsElement);
-	}
-
-	private void WriteThemeMaterials(XElement aircraftElement)
-	{
-		XmlUtil.RemoveChildren(aircraftElement, "Theme");
-		if (_themeMaterials == null || _themeMaterials.Length == 0)
-		{
-			return;
-		}
-
-		XElement themeElement = new XElement("Theme");
-		themeElement.SetAttributeValue("name", "Custom");
-		for (int i = 0; i < _themeMaterials.Length; i++)
-		{
-			CraftThemeMaterial material = _themeMaterials[i];
-			XElement materialElement = new XElement("Material");
-			materialElement.SetAttributeValue("style", string.IsNullOrWhiteSpace(material.Style) ? "SolidColor" : material.Style);
-			if (!string.IsNullOrWhiteSpace(material.Name))
-			{
-				materialElement.SetAttributeValue("name", material.Name);
-			}
-			materialElement.SetAttributeValue("color", ColorUtility.ToHtmlStringRGBA(material.Color));
-			materialElement.SetAttributeValue("s", XmlUtil.FormatFloat(material.Smoothness));
-			materialElement.SetAttributeValue("m", XmlUtil.FormatFloat(material.Metallic));
-			materialElement.SetAttributeValue("ed", XmlUtil.FormatFloat(material.EmissionDensity));
-			materialElement.SetAttributeValue("en", XmlUtil.FormatFloat(material.Emission));
-			if (material.Hidden)
-			{
-				materialElement.SetAttributeValue("hidden", "true");
-			}
-			themeElement.Add(materialElement);
-		}
-		aircraftElement.Add(themeElement);
 	}
 
 	private List<ExportConnection> CollectExportConnections()

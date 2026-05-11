@@ -8,3 +8,5 @@ ProjectSettings/*
 Temp/*
 Assets/Scenes/Crafts/*
 PROJECT_ARCHITECTURE.md
+*.csproj
+*.slnx

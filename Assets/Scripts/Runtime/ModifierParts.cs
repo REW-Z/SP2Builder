@@ -11,11 +11,6 @@ public interface IFuselageCarver
 	bool TryGetCutPlanes(FuselagePart target, out Plane[] planes);
 }
 
-internal interface IFuselageCarverData
-{
-	bool TryGetCutMeshData(FuselagePart target, out PreviewMeshData meshData, out Matrix4x4 cutterToTarget);
-}
-
 internal static class FuselageCarverUtility
 {
 	private const int CornerSamples = 10;
@@ -28,11 +23,6 @@ internal static class FuselageCarverUtility
 	public static Mesh BuildSolidCutMesh(IReadOnlyList<Vector2> outline, float depth, string meshName)
 	{
 		return MeshBooleanUtility.BuildExtrudedSolidMesh(outline, depth, meshName);
-	}
-
-	public static PreviewMeshData BuildSolidCutMeshData(IReadOnlyList<Vector2> outline, float depth, string meshName)
-	{
-		return MeshBooleanUtility.BuildExtrudedSolidMeshData(outline, depth, meshName);
 	}
 
 	public static bool CanCarveTarget(Part source, FuselagePart target)

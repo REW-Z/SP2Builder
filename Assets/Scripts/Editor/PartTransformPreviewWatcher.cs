@@ -35,12 +35,9 @@ internal static class PartTransformPreviewWatcher
 			}
 
 			Craft craft = part.GetComponentInParent<Craft>();
-			if (craft != null)
-			{
-				bool lightweight = part is FuselagePart || part is IFuselageCarver;
-				craft.QueuePreviewRebuildForPart(part, TransformPreviewDelaySeconds, lightweight);
-				EditorUtility.SetDirty(craft);
-			}
+			bool lightweight = part is FuselagePart || part is IFuselageCarver;
+			craft.QueuePreviewRebuildForPart(part, TransformPreviewDelaySeconds, lightweight);
+			EditorUtility.SetDirty(craft);
 
 			EditorUtility.SetDirty(part);
 			transform.hasChanged = false;

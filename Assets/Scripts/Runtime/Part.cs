@@ -156,25 +156,6 @@ public abstract class Part : MonoBehaviour
 		LoadPartState(partElement);
 	}
 
-	public virtual void InitializeNewPart(int partId, string partType, int orderIndex)
-	{
-		_orderIndex = orderIndex;
-		_partId = partId;
-		_partType = partType ?? string.Empty;
-		_rawPartXml = string.Empty;
-		transform.localPosition = Vector3.zero;
-		transform.localEulerAngles = Vector3.zero;
-		transform.localScale = Vector3.one;
-		_targetMode = string.Empty;
-		_targetPartIds = Array.Empty<int>();
-		_targetPartIdsAttributeName = "partIds";
-		_materialIds = new[] { 0 };
-		_materialsText = "0";
-		_connectionEndpoints.Clear();
-		_stateXmlDirty = true;
-		ApplyObjectName();
-	}
-
 	// 导出当前 Part 的变换、状态以及扩展数据。 / Export the current part transform, state, and extension data into XML.
 	public virtual XElement ExportPartElement()
 	{
@@ -224,12 +205,6 @@ public abstract class Part : MonoBehaviour
 	// 让子类把自己的状态块写回 Part XML。 / Let subclasses write their state payload into the part XML.
 	protected virtual void WritePartState(XElement partElement)
 	{
-	}
-
-	// 获取指定状态节点，导出时若不存在就创建。 / Fetch a named state element, creating it when the export path requires one.
-	protected XElement GetOrCreateStateElement(XElement partElement, string stateName)
-	{
-		return XmlUtil.GetOrCreateChild(partElement, stateName);
 	}
 
 	// 在写入新版本状态前移除旧状态节点。 / Remove one or more state elements before rewriting the current version.
@@ -304,7 +279,7 @@ public abstract class Part : MonoBehaviour
 	protected bool RequestCraftPreviewRebuild()
 	{
 		Craft craft = GetOwningCraft();
-		if (craft != null && !craft.IsRebuildingPreviews)
+		if (!craft.IsRebuildingPreviews)
 		{
 			craft.RebuildAllPreviews();
 			return true;
@@ -319,11 +294,6 @@ public abstract class Part : MonoBehaviour
 		return _targetPartIds != null && Array.IndexOf(_targetPartIds, partId) >= 0;
 	}
 
-	public void SchedulePreviewRefresh()
-	{
-		QueuePreviewRefresh();
-	}
-
 	public void ClearConnectionEndpoints()
 	{
 		_connectionEndpoints.Clear();
@@ -332,23 +302,6 @@ public abstract class Part : MonoBehaviour
 	public void AddConnectionEndpoint(int connectionId, bool isPartAEndpoint, int localAttachPointId, int connectedPartId, int connectedAttachPointId)
 	{
 		_connectionEndpoints.Add(new PartConnectionEndpoint(connectionId, isPartAEndpoint, localAttachPointId, connectedPartId, connectedAttachPointId));
-	}
-
-	public void SetPrimaryMaterialId(int materialId)
-	{
-		materialId = Mathf.Max(0, materialId);
-		if (_materialIds == null || _materialIds.Length == 0)
-		{
-			_materialIds = new[] { materialId };
-			_materialsText = FormatIntegerCsv(_materialIds);
-			return;
-		}
-
-		for (int i = 0; i < _materialIds.Length; i++)
-		{
-			_materialIds[i] = materialId;
-		}
-		_materialsText = FormatIntegerCsv(_materialIds);
 	}
 
 	public void SetMaterialsText(string materialsText)
@@ -372,19 +325,6 @@ public abstract class Part : MonoBehaviour
 		_connectionEndpoints.RemoveAt(index);
 	}
 
-	public bool HasDirectConnection(int localAttachPointId, Part connectedPart, int connectedAttachPointId)
-	{
-		if (connectedPart == null)
-		{
-			return false;
-		}
-
-		return _connectionEndpoints.Any(endpoint =>
-			endpoint.LocalAttachPointId == localAttachPointId
-			&& endpoint.ConnectedPartId == connectedPart.PartId
-			&& endpoint.ConnectedAttachPointId == connectedAttachPointId);
-	}
-
 	public bool TryGetConnectedPart(PartConnectionEndpoint endpoint, out Part connectedPart)
 	{
 		connectedPart = null;
@@ -394,11 +334,6 @@ public abstract class Part : MonoBehaviour
 		}
 
 		Craft craft = GetOwningCraft();
-		if (craft == null)
-		{
-			return false;
-		}
-
 		connectedPart = craft.FindPartById(endpoint.ConnectedPartId);
 		return connectedPart != null;
 	}
@@ -708,11 +643,6 @@ public abstract class Part : MonoBehaviour
 			.ToArray();
 	}
 
-	private static string FormatIntegerCsv(int[] ids)
-	{
-		return ids == null || ids.Length == 0 ? string.Empty : string.Join(",", ids);
-	}
-
 	private static bool IsDefaultScale(Vector3 scale)
 	{
 		const float epsilon = 0.0001f;
@@ -745,7 +675,7 @@ public abstract class Part : MonoBehaviour
 	{
 	#if UNITY_EDITOR
 		Craft craft = GetOwningCraft();
-		if (craft != null && (craft.IsRebuildingPreviews || craft.IsPreviewQueueSuppressed))
+		if (craft.IsRebuildingPreviews || craft.IsPreviewQueueSuppressed)
 		{
 			return;
 		}
@@ -781,13 +711,7 @@ public abstract class Part : MonoBehaviour
 		}
 
 		Craft craft = GetOwningCraft();
-		if (craft != null)
-		{
-			craft.QueuePreviewRebuildForPart(this, 0d, lightweight: this is FuselagePart);
-			return;
-		}
-
-		RefreshPreviewInternal();
+		craft.QueuePreviewRebuildForPart(this, 0d, lightweight: this is FuselagePart);
 	}
 	#endif
 

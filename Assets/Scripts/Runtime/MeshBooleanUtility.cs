@@ -208,19 +208,6 @@ internal static class MeshBooleanUtility
 		return BuildMesh(polygons, meshName);
 	}
 
-	// 按原版 0..1 CornerRadius 语义构建圆角矩形轮廓。 / Build a rounded rectangle outline using the original 0..1 CornerRadius semantics.
-	public static List<Vector2> BuildRoundedRectangleOutline(float width, float height, float cornerRadius, int cornerSamples)
-	{
-		List<Vector2> polygon = new List<Vector2>
-		{
-			new Vector2(width * 0.5f, height * 0.5f),
-			new Vector2(width * 0.5f, -height * 0.5f),
-			new Vector2(-width * 0.5f, -height * 0.5f),
-			new Vector2(-width * 0.5f, height * 0.5f)
-		};
-		return BuildRoundedConvexOutline(polygon, cornerRadius, cornerSamples);
-	}
-
 	// 按原版 upper/lower span + CornerRadius 语义构建圆角梯形轮廓。 / Build a rounded trapezoid outline using the original upper/lower span plus CornerRadius semantics.
 	public static List<Vector2> BuildRoundedTrapezoidOutline(Vector2 upperSpan, Vector2 lowerSpan, float height, float cornerRadius, int cornerSamples)
 	{
@@ -926,29 +913,6 @@ internal static class MeshBooleanUtility
 	{
 		return (Vector3.Distance(segment.A.Position, a.Position) <= LoopConnectionTolerance && Vector3.Distance(segment.B.Position, b.Position) <= LoopConnectionTolerance)
 			|| (Vector3.Distance(segment.A.Position, b.Position) <= LoopConnectionTolerance && Vector3.Distance(segment.B.Position, a.Position) <= LoopConnectionTolerance);
-	}
-
-	// 仅保留位于剩余 half-spaces 内部的 cap 多边形片段。 / Keep only the portions of cap polygons that remain inside the remaining half-spaces.
-	private static List<List<ClippedVertex>> ClipPolygonsInside(List<List<ClippedVertex>> polygons, Plane[] planes, int startPlaneIndex)
-	{
-		for (int planeIndex = startPlaneIndex; planeIndex < planes.Length; planeIndex++)
-		{
-			List<List<ClippedVertex>> nextPolygons = new List<List<ClippedVertex>>(polygons.Count);
-			for (int polygonIndex = 0; polygonIndex < polygons.Count; polygonIndex++)
-			{
-				SplitPolygonByPlane(polygons[polygonIndex], planes[planeIndex], out _, out List<ClippedVertex> inside, out _, out _);
-				if (inside.Count >= 3)
-				{
-					nextPolygons.Add(inside);
-				}
-			}
-			polygons = nextPolygons;
-			if (polygons.Count == 0)
-			{
-				break;
-			}
-		}
-		return polygons;
 	}
 
 	// 从一组交线段组装 cap 轮廓，并把单环或双环转换成扁平三角面。 / Assemble cap contours from cut segments and turn single-loop or two-loop cases into flat triangles.
@@ -2172,66 +2136,6 @@ internal static class MeshBooleanUtility
 		return plane.normal.sqrMagnitude > Epsilon * Epsilon;
 	}
 
-	// 收集内外环围绕公共中心的所有关键角度，供径向条带三角化使用。 / Collect all key angles around the shared center so radial-strip triangulation can cover the full annulus.
-	private static List<float> CollectSortedAngles(Vector2 center, IReadOnlyList<Vector2> outer, IReadOnlyList<Vector2> inner)
-	{
-		List<float> angles = new List<float>(outer.Count + inner.Count);
-		for (int i = 0; i < outer.Count; i++)
-		{
-			AddUniqueAngle(angles, Mathf.Atan2(outer[i].y - center.y, outer[i].x - center.x));
-		}
-		for (int i = 0; i < inner.Count; i++)
-		{
-			AddUniqueAngle(angles, Mathf.Atan2(inner[i].y - center.y, inner[i].x - center.x));
-		}
-
-		angles.Sort();
-		for (int i = angles.Count - 1; i > 0; i--)
-		{
-			if (Mathf.Abs(angles[i] - angles[i - 1]) <= Epsilon)
-			{
-				angles.RemoveAt(i);
-			}
-		}
-		return angles;
-	}
-
-	// 沿给定方向从公共中心发射射线，求它与凸闭环的首个正向交点。 / Shoot a ray from the shared center and find its first forward intersection with a convex loop.
-	private static bool TryIntersectConvexLoopRay(IReadOnlyList<Vector2> loop, Vector2 rayOrigin, float angle, out Vector2 hit)
-	{
-		Vector2 direction = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle));
-		float bestDistance = float.PositiveInfinity;
-		bool found = false;
-		hit = default;
-		for (int i = 0; i < loop.Count; i++)
-		{
-			Vector2 a = loop[i];
-			Vector2 b = loop[(i + 1) % loop.Count];
-			Vector2 edge = b - a;
-			float denominator = Cross(direction, edge);
-			if (Mathf.Abs(denominator) <= Epsilon)
-			{
-				continue;
-			}
-
-			Vector2 delta = a - rayOrigin;
-			float distance = Cross(delta, edge) / denominator;
-			float edgeFraction = Cross(delta, direction) / denominator;
-			if (distance < -Epsilon || edgeFraction < -Epsilon || edgeFraction > 1f + Epsilon)
-			{
-				continue;
-			}
-
-			if (distance < bestDistance)
-			{
-				bestDistance = distance;
-				hit = rayOrigin + direction * Mathf.Max(0f, distance);
-				found = true;
-			}
-		}
-		return found;
-	}
-
 	// 计算闭环在周长上的归一化累计位置，供桥接环时做最近匹配。 / Compute normalized perimeter fractions for one loop so ring bridging can match nearest points.
 	private static List<float> ComputeFractions(IReadOnlyList<Vector2> points)
 	{
@@ -2263,20 +2167,6 @@ internal static class MeshBooleanUtility
 			fractions[i] /= perimeter;
 		}
 		return fractions;
-	}
-
-	// 仅当新角度不与已有角度重合时才追加，避免条带退化。 / Append an angle only when it does not duplicate an existing sector boundary.
-	private static void AddUniqueAngle(List<float> angles, float angle)
-	{
-		angle = Mathf.Repeat(angle, Mathf.PI * 2f);
-		for (int i = 0; i < angles.Count; i++)
-		{
-			if (Mathf.Abs(Mathf.DeltaAngle(angle * Mathf.Rad2Deg, angles[i] * Mathf.Rad2Deg)) <= 0.01f)
-			{
-				return;
-			}
-		}
-		angles.Add(angle);
 	}
 
 	// 对两个闭环的参数化周长做最近邻匹配。 / Find the nearest perimeter-parameter matches between two closed loops.

@@ -4,7 +4,7 @@ using UnityEngine;
 
 [ExecuteAlways]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
-public class WindowPart : Part, IFuselageCarver, IFuselageCarverData
+public class WindowPart : Part, IFuselageCarver
 {
     [SerializeField, TextArea(2, 8)]
     private string _rawStateXml;
@@ -97,20 +97,6 @@ public class WindowPart : Part, IFuselageCarver, IFuselageCarverData
 
         mesh = FuselageCarverUtility.BuildSolidCutMesh(BuildOutline(), _depth, "ProceduralWindowCut");
         return mesh.vertexCount > 0;
-    }
-
-    bool IFuselageCarverData.TryGetCutMeshData(FuselagePart target, out PreviewMeshData meshData, out Matrix4x4 cutterToTarget)
-    {
-        meshData = null;
-        cutterToTarget = Matrix4x4.identity;
-        if(!FuselageCarverUtility.CanCarveTarget(this, target))
-        {
-            return false;
-        }
-
-        meshData = FuselageCarverUtility.BuildSolidCutMeshData(BuildOutline(), _depth, "ProceduralWindowCut");
-        cutterToTarget = target.transform.worldToLocalMatrix * transform.localToWorldMatrix;
-        return meshData.Vertices.Count > 0;
     }
 
     private List<Vector2> BuildOutline()
