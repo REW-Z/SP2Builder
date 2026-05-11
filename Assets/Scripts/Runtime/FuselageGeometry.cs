@@ -471,6 +471,8 @@ internal static class FuselageGeometry
 
 	private static PreviewMeshData BuildRawLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront)
 	{
+		using var _ = new ProfilerSample("BuildRawLoftData");//GC和大量耗时  
+
 		rear.Sanitize();
 		front.Sanitize();
 		Vector3 axis = offset.sqrMagnitude <= Epsilon ? Vector3.forward : offset.normalized;

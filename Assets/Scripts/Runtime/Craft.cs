@@ -656,9 +656,13 @@ public class Craft : MonoBehaviour
 				return;
 			}
 
-			if (this == null || gameObject == null || Application.isPlaying)
+			if(this == null || gameObject == null || Application.isPlaying)
 			{
-				FinishQueuedPreviewRebuild(repaint: false);
+				using(new ProfilerSample("FuselagePart.ApplyNeighbourSmoothing"))
+				{
+                    FinishQueuedPreviewRebuild(repaint: false);
+                }
+                    
 				return;
 			}
 
@@ -680,7 +684,11 @@ public class Craft : MonoBehaviour
 					{
 						_activePreviewTouchedFuselage = true;
 						_activePreviewFuselagePartIds.Add(fuselage.PartId);
-						fuselage.RefreshPreview();
+
+						using(new ProfilerSample("fuselage.RefreshPreview"))
+						{
+                            fuselage.RefreshPreview();
+                        }
 					}
 					else
 					{
@@ -707,14 +715,27 @@ public class Craft : MonoBehaviour
 
 			if (_activePreviewTouchedFuselage)
 			{
-				FuselagePart.ApplyNeighbourSmoothing(this, _activePreviewFuselagePartIds);
+
+                using(new ProfilerSample("FuselagePart.ApplyNeighbourSmoothing"))
+				{
+                    FuselagePart.ApplyNeighbourSmoothing(this, _activePreviewFuselagePartIds);
+                }
 			}
 
 			bool shouldDelaySmoothing = _activePreviewTouchedFuselage;
-			FinishQueuedPreviewRebuild(repaint: true);
+
+
+            using(new ProfilerSample("FuselagePart.ApplyNeighbourSmoothing"))
+            {
+                FinishQueuedPreviewRebuild(repaint: true);
+            }
+
 			if (shouldDelaySmoothing)
 			{
-				QueuePostRebuildSmoothing();
+                using(new ProfilerSample("QueuePostRebuildSmoothing"))
+				{
+                    QueuePostRebuildSmoothing();
+                }
 			}
 		}
 		catch (Exception exception)
