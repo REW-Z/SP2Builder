@@ -2139,14 +2139,11 @@ internal static class FuselageGeometry
 			return;
 		}
 
-		if (Application.isPlaying)
-		{
-			UnityEngine.Object.Destroy(mesh);
-		}
-		else
-		{
-			UnityEngine.Object.DestroyImmediate(mesh);
-		}
+		#if UNITY_EDITOR
+		UnityEngine.Object.DestroyImmediate(mesh);
+		#else
+		UnityEngine.Object.Destroy(mesh);
+		#endif
 	}
 
 	public static Mesh SubtractConvexVolumes(Mesh source, IReadOnlyList<Plane[]> volumes, string meshName)

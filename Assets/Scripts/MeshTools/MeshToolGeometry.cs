@@ -6,7 +6,7 @@ using UnityEngine.Rendering;
 namespace MeshTools
 {
     [Flags]
-    internal enum MeshToolAttributeMask
+    public enum MeshToolAttributeMask
     {
         None = 0,
         Normals = 1 << 0,
@@ -16,7 +16,7 @@ namespace MeshTools
         Colors = 1 << 4
     }
 
-    internal struct Vertex
+    public struct Vertex
     {
         public Vector3 Position;
         public Vector3 Normal;
@@ -93,7 +93,7 @@ namespace MeshTools
         }
     }
 
-    internal struct Triangle
+    public struct Triangle
     {
         public Vertex A;
         public Vertex B;
@@ -112,14 +112,14 @@ namespace MeshTools
         }
     }
 
-    internal struct MeshData
+    public struct MeshData
     {
         public List<Triangle> Triangles;
         public MeshToolAttributeMask Attributes;
         public int SubMeshCount;
     }
 
-    internal static class MeshToolGeometry
+    public static class MeshToolGeometry
     {
         public const float Epsilon = 0.00001f;
         public const float EpsilonSqr = Epsilon * Epsilon;
@@ -421,7 +421,7 @@ namespace MeshTools
         }
     }
 
-    internal sealed class MeshBuilder
+    public sealed class MeshBuilder
     {
         private readonly MeshToolAttributeMask attributes;
         private readonly List<Vector3> positions = new List<Vector3>();

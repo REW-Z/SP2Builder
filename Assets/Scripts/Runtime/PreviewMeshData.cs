@@ -3,7 +3,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 
 
-internal sealed class PreviewMeshData
+public sealed class PreviewMeshData
 {
 	public string Name;
 

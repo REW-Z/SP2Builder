@@ -49,23 +49,20 @@ namespace MeshTools
             pendingAction = action;
 
 #if UNITY_EDITOR
-            if (!Application.isPlaying)
+            requestedAt = EditorApplication.timeSinceStartup;
+            this.editModeDelaySeconds = Math.Max(0d, editModeDelaySeconds);
+            this.autoRunInEditMode = autoRunInEditMode;
+            queued = true;
+
+            if (!autoRunInEditMode)
             {
-                requestedAt = EditorApplication.timeSinceStartup;
-                this.editModeDelaySeconds = Math.Max(0d, editModeDelaySeconds);
-                this.autoRunInEditMode = autoRunInEditMode;
-                queued = true;
-
-                if (!autoRunInEditMode)
-                {
-                    EditorApplication.update -= RunPendingWhenQuiet;
-                    EditorApplication.delayCall -= RunPendingNow;
-                    return;
-                }
-
-                EditorApplication.update += RunPendingWhenQuiet;
+                EditorApplication.update -= RunPendingWhenQuiet;
+                EditorApplication.delayCall -= RunPendingNow;
                 return;
             }
+
+            EditorApplication.update += RunPendingWhenQuiet;
+            return;
 #endif
 
             RunNow(action);

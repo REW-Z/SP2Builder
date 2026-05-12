@@ -131,15 +131,13 @@ public class Craft : MonoBehaviour
 		}
 	}
 
+
 	// 在编辑器激活 Craft 时排队整机预览重建。 / Queue a full craft preview rebuild when the Craft becomes active in the editor.
 	private void OnEnable()
 	{
-	#if UNITY_EDITOR
-		if (!Application.isPlaying)
-		{
-			PreviewMaterialFactory.ClearThemedMaterialCache();
-			QueuePreviewRebuild();
-		}
+#if UNITY_EDITOR
+		PreviewMaterialFactory.ClearThemedMaterialCache();
+		QueuePreviewRebuild();
 	#endif
 	}
 
@@ -147,12 +145,9 @@ public class Craft : MonoBehaviour
 	private void OnValidate()
 	{
 	#if UNITY_EDITOR
-		if (!Application.isPlaying)
+		if (!_isRebuildingPreviews)
 		{
-			if (!_isRebuildingPreviews)
-			{
-				QueuePreviewRebuild();
-			}
+			QueuePreviewRebuild();
 		}
 	#endif
 	}
@@ -161,10 +156,7 @@ public class Craft : MonoBehaviour
 	public void ImportFromXml(string xmlPath)
 	{
 	#if UNITY_EDITOR
-		if (!Application.isPlaying)
-		{
-			ResetPreviewRebuildState();
-		}
+		ResetPreviewRebuildState();
 	#endif
 
 		XDocument document = XmlUtil.LoadDocument(xmlPath);
@@ -206,13 +198,10 @@ public class Craft : MonoBehaviour
 		}
 
 	#if UNITY_EDITOR
-		if (!Application.isPlaying)
-		{
-			QueuePreviewRebuild(0d, lightweight: false);
-			return;
-		}
-	#endif
+		QueuePreviewRebuild(0d, lightweight: false);
+	#else
 		RebuildAllPreviews();
+	#endif
 	}
 
 	// 把当前子零件层级导出回飞机 XML。 / Export the current child part hierarchy back into aircraft XML.
@@ -241,12 +230,8 @@ public class Craft : MonoBehaviour
 	public void RebuildAllPreviews(bool lightweight = true)
 	{
 	#if UNITY_EDITOR
-		if (!Application.isPlaying)
-		{
-			QueuePreviewRebuild(0d, lightweight);
-			return;
-		}
-	#endif
+		QueuePreviewRebuild(0d, lightweight);
+	#else
 		if (_isRebuildingPreviews)
 		{
 			return;
@@ -267,6 +252,7 @@ public class Craft : MonoBehaviour
 			_isLightweightPreviewRebuild = false;
 			_isRebuildingPreviews = false;
 		}
+	#endif
 	}
 
 	public Part FindPartById(int partId)
@@ -483,11 +469,6 @@ public class Craft : MonoBehaviour
 
 	public void RebuildPreviewForPart(Part changedPart, bool lightweight = true)
 	{
-		if (Application.isPlaying)
-		{
-			return;
-		}
-
 		if (changedPart == null)
 		{
 			RebuildAllPreviews();
@@ -518,11 +499,6 @@ public class Craft : MonoBehaviour
 
 	private void QueuePreviewRebuildInternal(double delaySeconds, bool fullRebuild, bool lightweight)
 	{
-		if (Application.isPlaying)
-		{
-			return;
-		}
-
 		if (_suppressPreviewQueue || _isRebuildingPreviews)
 		{
 			return;
@@ -618,7 +594,7 @@ public class Craft : MonoBehaviour
 		EditorApplication.delayCall -= RunQueuedPreviewRebuild;
 		_previewRebuildDispatchQueued = false;
 
-		if (this == null || gameObject == null || Application.isPlaying)
+		if (this == null || gameObject == null)
 		{
 			FinishQueuedPreviewRebuild(repaint: false);
 			return;
@@ -657,7 +633,7 @@ public class Craft : MonoBehaviour
 				return;
 			}
 
-			if(this == null || gameObject == null || Application.isPlaying)
+			if (this == null || gameObject == null)
 			{
 				using(new SampleProfiler("FuselagePart.ApplyNeighbourSmoothing"))
 				{
@@ -764,7 +740,7 @@ public class Craft : MonoBehaviour
 	{
 		EditorApplication.delayCall -= ApplyPostRebuildSmoothing;
 		_postRebuildSmoothingQueued = false;
-		if (this == null || gameObject == null || Application.isPlaying)
+		if (this == null || gameObject == null)
 		{
 			return;
 		}
@@ -848,14 +824,11 @@ public class Craft : MonoBehaviour
 		_partIndexDirty = true;
 		foreach (Transform child in transform.Cast<Transform>().ToArray())
 		{
-			if (Application.isPlaying)
-			{
-				Destroy(child.gameObject);
-			}
-			else
-			{
-				DestroyImmediate(child.gameObject);
-			}
+			#if UNITY_EDITOR
+			DestroyImmediate(child.gameObject);
+			#else
+			Destroy(child.gameObject);
+			#endif
 		}
 	}
 

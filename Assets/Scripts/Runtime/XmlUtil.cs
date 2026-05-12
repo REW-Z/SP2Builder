@@ -236,15 +236,8 @@ internal static class PreviewMaterialFactory
 				continue;
 			}
 
-			if (Application.isPlaying)
-			{
-				UnityEngine.Object.Destroy(material);
-			}
-			else
-			{
-				UnityEngine.Object.DestroyImmediate(material);
-			}
-		}
+            UnityEngine.Object.DestroyImmediate(material);
+        }
 
 		ThemedMaterials.Clear();
 	}

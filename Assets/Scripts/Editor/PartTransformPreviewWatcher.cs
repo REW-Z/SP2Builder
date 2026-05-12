@@ -15,7 +15,7 @@ internal static class PartTransformPreviewWatcher
 
 	private static void WatchSelectedPartTransforms()
 	{
-		if (Application.isPlaying || Selection.transforms == null || Selection.transforms.Length == 0)
+		if (Selection.transforms == null || Selection.transforms.Length == 0)
 		{
 			return;
 		}

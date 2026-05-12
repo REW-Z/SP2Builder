@@ -224,33 +224,24 @@ public abstract class Part : MonoBehaviour
 			return;
 		}
 
-		if (Application.isPlaying)
-		{
-			Destroy(obj);
-		}
-		else
-		{
-			DestroyImmediate(obj);
-		}
+		#if UNITY_EDITOR
+		DestroyImmediate(obj);
+		#else
+		Destroy(obj);
+		#endif
 	}
 
 	// 在编辑器字段变更时同步对象名和预览。 / Keep editor object names and previews synchronized with serialized field edits.
 	protected virtual void OnValidate()
 	{
 		ApplyObjectName();
-		if (!Application.isPlaying)
-		{
-			QueuePreviewRefresh();
-		}
+		QueuePreviewRefresh();
 	}
 
 	// 当 Part 在编辑器里激活时排队一次预览重建。 / Queue a preview rebuild whenever the part becomes active in the editor.
 	protected virtual void OnEnable()
 	{
-		if (!Application.isPlaying)
-		{
-			QueuePreviewRefresh();
-		}
+		QueuePreviewRefresh();
 	}
 
 	// 延迟解析预览所需组件，缺失时自动补齐。 / Lazily resolve required preview components, creating them if necessary.
@@ -705,7 +696,7 @@ public abstract class Part : MonoBehaviour
 		EditorApplication.update -= DelayedRefreshPreview;
 		_previewRefreshQueued = false;
 
-		if (this == null || gameObject == null || Application.isPlaying)
+		if (this == null || gameObject == null)
 		{
 			return;
 		}
@@ -896,10 +887,7 @@ public class LabelState : MonoBehaviour, IPartXmlExtension
 	// 当编辑器中的序列化字段变化时排队刷新标签预览。 / Queue label preview updates when serialized properties change in the editor.
 	private void OnValidate()
 	{
-		if (!Application.isPlaying)
-		{
-			QueuePreviewRefresh();
-		}
+		QueuePreviewRefresh();
 	}
 
 	// 在编辑器中合并多次标签预览刷新请求。 / Coalesce label preview updates in the editor.
@@ -925,7 +913,7 @@ public class LabelState : MonoBehaviour, IPartXmlExtension
 		EditorApplication.delayCall -= DelayedRefreshPreview;
 		_previewRefreshQueued = false;
 
-		if (this == null || gameObject == null || Application.isPlaying)
+		if (this == null || gameObject == null)
 		{
 			return;
 		}
