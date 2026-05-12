@@ -119,6 +119,7 @@ namespace MeshTools
                     plane.GetDistanceToPoint(vertices[1].Position),
                     plane.GetDistanceToPoint(vertices[2].Position)
                 };
+                SnapDs(distances);
 
                 // 全在某一侧的三角形可以直接拷贝；跨平面的三角形才需要裁剪。
                 bool positiveSide = distances[0] >= -MeshToolGeometry.Epsilon &&
@@ -153,6 +154,11 @@ namespace MeshTools
                     {
                         capSegments.Add(capSegment);
                     }
+                }
+                else if (cap && TryGetOnPlaneSeg(vertices, distances, out CapSegment onPlaneSegment))
+                {
+                    intersects = true;
+                    capSegments.Add(onPlaneSegment);
                 }
             }
 
@@ -205,6 +211,7 @@ namespace MeshTools
                     plane.GetDistanceToPoint(vertices[1].Position),
                     plane.GetDistanceToPoint(vertices[2].Position)
                 };
+                SnapDs(distances);
 
                 bool positiveSide = distances[0] >= -MeshToolGeometry.Epsilon &&
                     distances[1] >= -MeshToolGeometry.Epsilon &&
@@ -235,6 +242,11 @@ namespace MeshTools
                     {
                         capSegments.Add(capSegment);
                     }
+                }
+                else if (cap && TryGetOnPlaneSeg(vertices, distances, out CapSegment onPlaneSegment))
+                {
+                    intersects = true;
+                    capSegments.Add(onPlaneSegment);
                 }
             }
 
@@ -451,27 +463,11 @@ namespace MeshTools
         /// </summary>
         private static bool TryGetCapSegment(Vertex[] vertices, float[] distances, out CapSegment segment)
         {
-            bool hasPositive = false;
-            bool hasNegative = false;
-
-            // 只有同时存在正负两侧顶点时，三角形才真正贡献切口边。
-            for (int i = 0; i < distances.Length; i++)
-            {
-                hasPositive |= distances[i] > MeshToolGeometry.Epsilon;
-                hasNegative |= distances[i] < -MeshToolGeometry.Epsilon;
-            }
-
-            if (!hasPositive || !hasNegative)
-            {
-                segment = default(CapSegment);
-                return false;
-            }
-
             List<Vertex> intersections = new List<Vertex>(2);
             // 原始顶点刚好在平面上时，它本身就是切口端点。
             for (int i = 0; i < vertices.Length; i++)
             {
-                if (Mathf.Abs(distances[i]) <= MeshToolGeometry.Epsilon)
+                if (distances[i] == 0f)
                 {
                     AddUniqueIntersection(intersections, vertices[i]);
                 }
@@ -504,6 +500,70 @@ namespace MeshTools
 
             segment = new CapSegment(intersections[0], intersections[1]);
             return !MeshToolGeometry.SamePosition(segment.A.Position, segment.B.Position);
+        }
+
+        /// <summary>
+        /// 把接近平面的 signed distance 吸附到 0，避免“顶点几乎在平面上”时不同分支判断不一致。
+        /// </summary>
+        private static void SnapDs(float[] distances)
+        {
+            if (distances == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < distances.Length; i++)
+            {
+                distances[i] = SnapD(distances[i]);
+            }
+        }
+
+        /// <summary>
+        /// 把单个距离吸附到稳定符号：足够接近切割平面时直接视为 0。
+        /// </summary>
+        private static float SnapD(float distance)
+        {
+            return Mathf.Abs(distance) <= MeshToolGeometry.Epsilon ? 0f : distance;
+        }
+
+        /// <summary>
+        /// 当三角形有一整条边恰好落在切割平面上时，把这条共面边也作为 cap 边界收集起来。
+        /// </summary>
+        private static bool TryGetOnPlaneSeg(Vertex[] vertices, float[] distances, out CapSegment segment)
+        {
+            segment = default(CapSegment);
+
+            bool hasPositive = false;
+            bool hasNegative = false;
+            for (int i = 0; i < distances.Length; i++)
+            {
+                hasPositive |= distances[i] > MeshToolGeometry.Epsilon;
+                hasNegative |= distances[i] < -MeshToolGeometry.Epsilon;
+            }
+
+            if (hasPositive && hasNegative)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                int next = (i + 1) % vertices.Length;
+                if (Mathf.Abs(distances[i]) > MeshToolGeometry.Epsilon || Mathf.Abs(distances[next]) > MeshToolGeometry.Epsilon)
+                {
+                    continue;
+                }
+
+                if (MeshToolGeometry.SamePosition(vertices[i].Position, vertices[next].Position))
+                {
+                    continue;
+                }
+
+                segment = new CapSegment(vertices[i], vertices[next]);
+                return true;
+            }
+
+            return false;
         }
 
         /// <summary>
@@ -571,8 +631,11 @@ namespace MeshTools
                 loopBuilder.AddSegment(segments[i].A, segments[i].B);
             }
 
-            List<List<Vertex>> loops = loopBuilder.BuildLoops();
+            List<List<Vertex>> loops = loopBuilder.BuildLoops(basis);
             AddCapLoops(builder, loops, basis, capNormal, capSubMesh);
+
+            List<List<Vertex>> openChains = loopBuilder.BuildOpenChains();
+            AddOpenCaps(builder, openChains, capNormal.normalized, capSubMesh);
         }
 
         /// <summary>
@@ -805,6 +868,201 @@ namespace MeshTools
                 walkedOuter++;
                 walkedInner++;
             }
+        }
+
+        // 当切口图没有完全闭成环时，把剩余开链两两桥接成封口三角带。 / Bridge any leftover open chains pairwise into cap strips when the cut graph fails to close into loops.
+        private static void AddOpenCaps(MeshBuilder builder, List<List<Vertex>> openChains, Vector3 normal, int capSubMesh)
+        {
+            if (openChains == null || openChains.Count < 2)
+            {
+                return;
+            }
+
+            bool[] used = new bool[openChains.Count];
+            while (true)
+            {
+                int bestA = -1;
+                int bestB = -1;
+                float bestCost = float.PositiveInfinity;
+                for (int i = 0; i < openChains.Count; i++)
+                {
+                    if (used[i] || openChains[i].Count < 2)
+                    {
+                        continue;
+                    }
+
+                    for (int j = i + 1; j < openChains.Count; j++)
+                    {
+                        if (used[j] || openChains[j].Count < 2)
+                        {
+                            continue;
+                        }
+
+                        float sameDirection = Vector3.Distance(openChains[i][0].Position, openChains[j][0].Position) + Vector3.Distance(openChains[i][^1].Position, openChains[j][^1].Position);
+                        float reversedDirection = Vector3.Distance(openChains[i][0].Position, openChains[j][^1].Position) + Vector3.Distance(openChains[i][^1].Position, openChains[j][0].Position);
+                        float pairingCost = Mathf.Min(sameDirection, reversedDirection);
+                        if (pairingCost >= bestCost)
+                        {
+                            continue;
+                        }
+
+                        bestCost = pairingCost;
+                        bestA = i;
+                        bestB = j;
+                    }
+                }
+
+                if (bestA < 0 || bestB < 0)
+                {
+                    break;
+                }
+
+                used[bestA] = true;
+                used[bestB] = true;
+                AddOpenCaps(builder, openChains[bestA], openChains[bestB], normal, capSubMesh);
+            }
+        }
+
+        // 把两条开链桥接成一条三角带，尽量恢复缺失的截面封口。 / Bridge two open chains into a triangle strip to recover the missing cap patch.
+        private static void AddOpenCaps(MeshBuilder builder, List<Vertex> chainA, List<Vertex> chainB, Vector3 normal, int capSubMesh)
+        {
+            if (chainA.Count < 2 || chainB.Count < 2)
+            {
+                return;
+            }
+
+            if (ChainLen(chainB) > ChainLen(chainA))
+            {
+                (chainA, chainB) = (chainB, chainA);
+            }
+
+            float sameDirection = Vector3.Distance(chainA[0].Position, chainB[0].Position) + Vector3.Distance(chainA[^1].Position, chainB[^1].Position);
+            float reversedDirection = Vector3.Distance(chainA[0].Position, chainB[^1].Position) + Vector3.Distance(chainA[^1].Position, chainB[0].Position);
+            if (reversedDirection < sameDirection)
+            {
+                chainB = new List<Vertex>(chainB);
+                chainB.Reverse();
+            }
+
+            List<float> fractionsA = OpenFractions(chainA);
+            List<float> fractionsB = OpenFractions(chainB);
+            int[] linksA = OpenLinks(fractionsA, fractionsB);
+            int[] linksB = OpenLinks(fractionsB, fractionsA);
+
+            int indexA = 0;
+            int indexB = 0;
+            int stepLimit = chainA.Count + chainB.Count + 4;
+            int steps = 0;
+            while ((indexA < chainA.Count - 1 || indexB < chainB.Count - 1) && steps++ < stepLimit)
+            {
+                int nextA = Mathf.Min(indexA + 1, chainA.Count - 1);
+                int nextB = Mathf.Min(indexB + 1, chainB.Count - 1);
+                bool canAdvanceA = indexA < chainA.Count - 1 && (indexB == chainB.Count - 1 || linksB[indexB] == nextA || linksA[nextA] == indexB);
+                bool canAdvanceB = indexB < chainB.Count - 1 && (indexA == chainA.Count - 1 || linksA[indexA] == nextB || linksB[nextB] == indexA);
+
+                if (canAdvanceA && !canAdvanceB)
+                {
+                    AddCapTriangle(builder, chainA[indexA], chainB[indexB], chainA[nextA], normal, capSubMesh);
+                    indexA = nextA;
+                    continue;
+                }
+
+                if (canAdvanceB && !canAdvanceA)
+                {
+                    AddCapTriangle(builder, chainA[indexA], chainB[nextB], chainB[indexB], normal, capSubMesh);
+                    indexB = nextB;
+                    continue;
+                }
+
+                if (indexA == chainA.Count - 1)
+                {
+                    AddCapTriangle(builder, chainA[indexA], chainB[nextB], chainB[indexB], normal, capSubMesh);
+                    indexB = nextB;
+                    continue;
+                }
+
+                if (indexB == chainB.Count - 1)
+                {
+                    AddCapTriangle(builder, chainA[indexA], chainB[indexB], chainA[nextA], normal, capSubMesh);
+                    indexA = nextA;
+                    continue;
+                }
+
+                AddCapTriangle(builder, chainA[indexA], chainB[indexB], chainA[nextA], normal, capSubMesh);
+                AddCapTriangle(builder, chainA[nextA], chainB[indexB], chainB[nextB], normal, capSubMesh);
+                indexA = nextA;
+                indexB = nextB;
+            }
+        }
+
+        // 计算一条开链上的归一化累计长度，便于按相近参数桥接两侧。 / Compute normalized cumulative lengths along an open chain so two chains can be bridged by similar parameters.
+        private static List<float> OpenFractions(List<Vertex> chain)
+        {
+            List<float> fractions = new List<float>(chain.Count);
+            if (chain.Count == 0)
+            {
+                return fractions;
+            }
+
+            float total = 0f;
+            fractions.Add(0f);
+            for (int i = 1; i < chain.Count; i++)
+            {
+                total += Vector3.Distance(chain[i - 1].Position, chain[i].Position);
+                fractions.Add(total);
+            }
+
+            if (total <= MeshToolGeometry.Epsilon)
+            {
+                for (int i = 0; i < fractions.Count; i++)
+                {
+                    fractions[i] = chain.Count <= 1 ? 0f : i / (float)(chain.Count - 1);
+                }
+                return fractions;
+            }
+
+            for (int i = 0; i < fractions.Count; i++)
+            {
+                fractions[i] /= total;
+            }
+
+            return fractions;
+        }
+
+        // 在两条开链之间做最近参数匹配，不做闭环回绕。 / Match nearest parameters between two open chains without circular wrapping.
+        private static int[] OpenLinks(List<float> source, List<float> target)
+        {
+            int[] links = new int[source.Count];
+            for (int i = 0; i < source.Count; i++)
+            {
+                float bestDistance = float.PositiveInfinity;
+                int bestIndex = 0;
+                for (int j = 0; j < target.Count; j++)
+                {
+                    float distance = Mathf.Abs(source[i] - target[j]);
+                    if (distance < bestDistance)
+                    {
+                        bestDistance = distance;
+                        bestIndex = j;
+                    }
+                }
+
+                links[i] = bestIndex;
+            }
+
+            return links;
+        }
+
+        // 估计一条开链的总长度，优先把更长的一侧作为主链。 / Estimate the total length of an open chain so the longer side can be treated as the primary chain.
+        private static float ChainLen(List<Vertex> chain)
+        {
+            float length = 0f;
+            for (int i = 1; i < chain.Count; i++)
+            {
+                length += Vector3.Distance(chain[i - 1].Position, chain[i].Position);
+            }
+
+            return length;
         }
 
         private static void AddCapTriangle(MeshBuilder builder, Vertex a, Vertex b, Vertex c, Vector3 normal, int capSubMesh)
@@ -1200,7 +1458,7 @@ namespace MeshTools
             /// <summary>
             /// 从未使用边集合中追踪所有闭合切口环。
             /// </summary>
-            public List<List<Vertex>> BuildLoops()
+            public List<List<Vertex>> BuildLoops(PlaneBasis basis)
             {
                 List<List<Vertex>> loops = new List<List<Vertex>>();
                 while (unusedEdges.Count > 0)
@@ -1221,7 +1479,7 @@ namespace MeshTools
                     int guard = points.Count * points.Count;
                     while (current != start && guard-- > 0)
                     {
-                        int next = FindNext(current, previous, start, loop.Count);
+                        int next = FindNext(current, previous, start, loop.Count, basis);
                         if (next < 0)
                         {
                             break;
@@ -1247,6 +1505,115 @@ namespace MeshTools
                 return loops;
             }
 
+            // 从剩余未闭合的线段图里恢复开链，供后续桥接补面。 / Recover open chains from the remaining unclosed segment graph for bridge-cap fallback.
+            public List<List<Vertex>> BuildOpenChains()
+            {
+                List<List<int>> adjacency = new List<List<int>>(points.Count);
+                for (int i = 0; i < points.Count; i++)
+                {
+                    adjacency.Add(new List<int>());
+                }
+
+                foreach (EdgeKey edge in unusedEdges)
+                {
+                    adjacency[edge.A].Add(edge.B);
+                    adjacency[edge.B].Add(edge.A);
+                }
+
+                List<List<Vertex>> chains = new List<List<Vertex>>();
+                bool[] visited = new bool[points.Count];
+                Queue<int> queue = new Queue<int>();
+                for (int nodeIndex = 0; nodeIndex < points.Count; nodeIndex++)
+                {
+                    if (visited[nodeIndex] || adjacency[nodeIndex].Count == 0)
+                    {
+                        continue;
+                    }
+
+                    List<int> component = new List<int>();
+                    queue.Enqueue(nodeIndex);
+                    visited[nodeIndex] = true;
+                    while (queue.Count > 0)
+                    {
+                        int current = queue.Dequeue();
+                        component.Add(current);
+                        for (int i = 0; i < adjacency[current].Count; i++)
+                        {
+                            int next = adjacency[current][i];
+                            if (visited[next])
+                            {
+                                continue;
+                            }
+
+                            visited[next] = true;
+                            queue.Enqueue(next);
+                        }
+                    }
+
+                    List<int> endpoints = new List<int>(2);
+                    bool validChain = true;
+                    for (int i = 0; i < component.Count; i++)
+                    {
+                        int degree = adjacency[component[i]].Count;
+                        if (degree == 1)
+                        {
+                            endpoints.Add(component[i]);
+                        }
+                        else if (degree != 2)
+                        {
+                            validChain = false;
+                            break;
+                        }
+                    }
+
+                    if (!validChain || endpoints.Count != 2)
+                    {
+                        continue;
+                    }
+
+                    List<Vertex> chain = new List<Vertex>(component.Count);
+                    int previous = -1;
+                    int currentNode = endpoints[0];
+                    for (int step = 0; step < component.Count; step++)
+                    {
+                        chain.Add(points[currentNode].Vertex);
+                        if (currentNode == endpoints[1])
+                        {
+                            break;
+                        }
+
+                        int nextNode = -1;
+                        for (int i = 0; i < adjacency[currentNode].Count; i++)
+                        {
+                            int candidate = adjacency[currentNode][i];
+                            if (candidate == previous)
+                            {
+                                continue;
+                            }
+
+                            nextNode = candidate;
+                            break;
+                        }
+
+                        if (nextNode < 0)
+                        {
+                            chain.Clear();
+                            break;
+                        }
+
+                        previous = currentNode;
+                        currentNode = nextNode;
+                    }
+
+                    if (chain.Count >= 2)
+                    {
+                        chains.Add(chain);
+                    }
+                }
+
+                return chains;
+            }
+
             /// <summary>
             /// 查找已有近似点，找不到时创建新图点。
             /// </summary>
@@ -1267,10 +1634,15 @@ namespace MeshTools
             /// <summary>
             /// 在当前点的邻接点中找下一条还没使用过的边。
             /// </summary>
-            private int FindNext(int current, int previous, int start, int loopCount)
+            private int FindNext(int current, int previous, int start, int loopCount, PlaneBasis basis)
             {
                 GraphPoint point = points[current];
-                int fallback = -1;
+                Vector2 currentPoint = Project(point.Vertex.Position, basis);
+                Vector2 previousPoint = Project(points[previous].Vertex.Position, basis);
+                Vector2 incoming = currentPoint - previousPoint;
+                int bestNeighbor = -1;
+                float bestTurn = float.PositiveInfinity;
+                float bestDistance = float.NegativeInfinity;
 
                 for (int i = 0; i < point.Neighbors.Count; i++)
                 {
@@ -1282,20 +1654,40 @@ namespace MeshTools
                     }
 
                     // 走回起点时，至少要已经形成三条边，避免马上折返成两点环。
-                    if (neighbor == start && loopCount > 2)
+                    if (neighbor == start && loopCount <= 2)
                     {
-                        return neighbor;
+                        continue;
                     }
 
-                    if (neighbor != previous)
+                    Vector2 nextPoint = Project(points[neighbor].Vertex.Position, basis);
+                    Vector2 outgoing = nextPoint - currentPoint;
+                    float turn = Turn(incoming, outgoing);
+                    float distance = outgoing.sqrMagnitude;
+                    if (bestNeighbor < 0
+                        || turn < bestTurn - MeshToolGeometry.Epsilon
+                        || (Mathf.Abs(turn - bestTurn) <= MeshToolGeometry.Epsilon && distance > bestDistance))
                     {
-                        return neighbor;
+                        bestNeighbor = neighbor;
+                        bestTurn = turn;
+                        bestDistance = distance;
                     }
-
-                    fallback = neighbor;
                 }
 
-                return fallback;
+                return bestNeighbor;
+            }
+
+            // 用平面投影后的转角为邻接边排序，避免多环在同一点附近时走错边。 / Rank candidate edges by projected turning angle so cap loops do not jump across nearby rings.
+            private static float Turn(Vector2 incoming, Vector2 outgoing)
+            {
+                if (incoming.sqrMagnitude <= MeshToolGeometry.EpsilonSqr || outgoing.sqrMagnitude <= MeshToolGeometry.EpsilonSqr)
+                {
+                    return 0f;
+                }
+
+                incoming.Normalize();
+                outgoing.Normalize();
+                float angle = Mathf.Atan2(incoming.x * outgoing.y - incoming.y * outgoing.x, Vector2.Dot(incoming, outgoing));
+                return angle < 0f ? angle + Mathf.PI * 2f : angle;
             }
 
             /// <summary>

@@ -3,9 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Xml.Linq;
 using UnityEngine;
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 
 [Serializable]
@@ -58,7 +56,12 @@ public class Craft : MonoBehaviour
 
 	private bool _hasConnectionData;
 
-	#if UNITY_EDITOR
+    private static bool _editorUpdateRegistered;
+
+	private static readonly Dictionary<int, Craft> _editorUpdateCrafts = new Dictionary<int, Craft>();
+
+	private static readonly List<Action> _editorUpdateCallbacks = new List<Action>();
+
 	private bool _previewRebuildQueued;
 
 	private bool _previewRebuildDispatchQueued;
@@ -88,7 +91,10 @@ public class Craft : MonoBehaviour
 	private bool _incrementalPreviewRebuildActive;
 
 	private bool _postRebuildSmoothingQueued;
-	#endif
+
+	private bool _delayedRebuildPending;
+
+	private bool _continueQueuedPreviewRebuildPending;
 
 	public string SourceXmlPath => _sourceXmlPath;
 
@@ -135,29 +141,29 @@ public class Craft : MonoBehaviour
 	// 在编辑器激活 Craft 时排队整机预览重建。 / Queue a full craft preview rebuild when the Craft becomes active in the editor.
 	private void OnEnable()
 	{
-#if UNITY_EDITOR
+      RegisterForEditorUpdate();
 		PreviewMaterialFactory.ClearThemedMaterialCache();
 		QueuePreviewRebuild();
-	#endif
+	}
+
+	private void OnDisable()
+	{
+		UnregisterFromEditorUpdate();
 	}
 
 	// 在编辑器里修改 Craft 序列化字段时排队整机预览重建。 / Queue a full craft preview rebuild when serialized Craft fields change in the editor.
 	private void OnValidate()
 	{
-	#if UNITY_EDITOR
 		if (!_isRebuildingPreviews)
 		{
 			QueuePreviewRebuild();
 		}
-	#endif
 	}
 
 	// 导入飞机 XML，并在当前 Craft 下生成对应的子零件对象。 / Import an aircraft XML file and instantiate child part GameObjects under this craft.
 	public void ImportFromXml(string xmlPath)
 	{
-	#if UNITY_EDITOR
 		ResetPreviewRebuildState();
-	#endif
 
 		XDocument document = XmlUtil.LoadDocument(xmlPath);
 		XElement aircraftElement = document.Root;
@@ -197,11 +203,7 @@ public class Craft : MonoBehaviour
 			_suppressPreviewQueue = false;
 		}
 
-	#if UNITY_EDITOR
 		QueuePreviewRebuild(0d, lightweight: false);
-	#else
-		RebuildAllPreviews();
-	#endif
 	}
 
 	// 把当前子零件层级导出回飞机 XML。 / Export the current child part hierarchy back into aircraft XML.
@@ -229,30 +231,7 @@ public class Craft : MonoBehaviour
 	// 重建所有零件预览，然后统一处理机身接缝法线平滑。 / Rebuild every part preview and then smooth fuselage seams across neighbors.
 	public void RebuildAllPreviews(bool lightweight = true)
 	{
-	#if UNITY_EDITOR
 		QueuePreviewRebuild(0d, lightweight);
-	#else
-		if (_isRebuildingPreviews)
-		{
-			return;
-		}
-
-		try
-		{
-			_isRebuildingPreviews = true;
-			_isLightweightPreviewRebuild = false;
-			foreach (Part part in GetComponentsInChildren<Part>(includeInactive: true))
-			{
-				part.RefreshPreview();
-			}
-			FuselagePart.ApplyNeighbourSmoothing(this);
-		}
-		finally
-		{
-			_isLightweightPreviewRebuild = false;
-			_isRebuildingPreviews = false;
-		}
-	#endif
 	}
 
 	public Part FindPartById(int partId)
@@ -307,9 +286,7 @@ public class Craft : MonoBehaviour
 	{
 		PreviewMaterialFactory.ClearThemedMaterialCache();
 		RebuildAllPreviews();
-	#if UNITY_EDITOR
 		SceneView.RepaintAll();
-	#endif
 	}
 
 	public Part ClonePart(Part source)
@@ -443,7 +420,6 @@ public class Craft : MonoBehaviour
 		RefreshConnectionDataFlag();
 	}
 
-	#if UNITY_EDITOR
 	// 把多次编辑器刷新请求合并成一次延迟的整机重建。 / Coalesce multiple editor refresh requests into a single delayed craft rebuild.
 	public void QueuePreviewRebuild(double delaySeconds = 0.12d)
 	{
@@ -486,13 +462,8 @@ public class Craft : MonoBehaviour
 			CancelActivePreviewRebuild();
 		}
 
-		EditorApplication.update -= DelayedRebuildPreviews;
-		EditorApplication.delayCall -= RunQueuedPreviewRebuild;
-		_previewRebuildQueued = false;
-		_previewRebuildDispatchQueued = false;
-		_queuedFullPreviewRebuild = false;
+      ResetQueuedPreviewRequest();
 		_queuedPreviewRequiresFullQuality = !lightweight;
-		_queuedPreviewPartInstanceIds.Clear();
 		QueueImpactedPreviewParts(changedPart);
 		BeginQueuedPreviewRebuild();
 	}
@@ -525,8 +496,8 @@ public class Craft : MonoBehaviour
 			return;
 		}
 
-		_previewRebuildQueued = true;
-		EditorApplication.update += DelayedRebuildPreviews;
+       _previewRebuildQueued = true;
+		SetDelayedRebuildPending(true);
 	}
 
 	private void QueueImpactedPreviewParts(Part changedPart)
@@ -578,7 +549,7 @@ public class Craft : MonoBehaviour
 			return;
 		}
 
-		EditorApplication.update -= DelayedRebuildPreviews;
+      SetDelayedRebuildPending(false);
 		if (_previewRebuildDispatchQueued)
 		{
 			return;
@@ -600,10 +571,9 @@ public class Craft : MonoBehaviour
 			return;
 		}
 
-		if (EditorApplication.timeSinceStartup < _previewRebuildDueTime)
+        if (EditorApplication.timeSinceStartup < _previewRebuildDueTime)
 		{
-			EditorApplication.update -= DelayedRebuildPreviews;
-			EditorApplication.update += DelayedRebuildPreviews;
+			SetDelayedRebuildPending(true);
 			return;
 		}
 
@@ -613,14 +583,10 @@ public class Craft : MonoBehaviour
 	private void BeginQueuedPreviewRebuild()
 	{
 		_activePreviewRebuildParts = GetQueuedPreviewParts();
-
-		_activePreviewRebuildIndex = 0;
-		_activePreviewTouchedFuselage = false;
-		_activePreviewFuselagePartIds.Clear();
+		ResetActivePreviewProgress();
 		_activePreviewRebuildLightweight = !_queuedPreviewRequiresFullQuality;
 		_incrementalPreviewRebuildActive = true;
-		EditorApplication.update -= ContinueQueuedPreviewRebuild;
-		EditorApplication.update += ContinueQueuedPreviewRebuild;
+     SetContinueQueuedPreviewRebuildPending(true);
 	}
 
 	private void ContinueQueuedPreviewRebuild()
@@ -629,7 +595,7 @@ public class Craft : MonoBehaviour
 		{
 			if (!_incrementalPreviewRebuildActive)
 			{
-				EditorApplication.update -= ContinueQueuedPreviewRebuild;
+              SetContinueQueuedPreviewRebuildPending(false);
 				return;
 			}
 
@@ -752,44 +718,20 @@ public class Craft : MonoBehaviour
 
 	private void FinishQueuedPreviewRebuild(bool repaint)
 	{
-		EditorApplication.update -= DelayedRebuildPreviews;
-		EditorApplication.update -= ContinueQueuedPreviewRebuild;
-		EditorApplication.delayCall -= RunQueuedPreviewRebuild;
-		_previewRebuildQueued = false;
-		_previewRebuildDispatchQueued = false;
-		_queuedFullPreviewRebuild = false;
-		_queuedPreviewRequiresFullQuality = false;
-		_queuedPreviewPartInstanceIds.Clear();
-		_activePreviewRebuildParts = Array.Empty<Part>();
-		_activePreviewRebuildIndex = 0;
-		_activePreviewRebuildLightweight = false;
-		_activePreviewTouchedFuselage = false;
-		_activePreviewFuselagePartIds.Clear();
-		_incrementalPreviewRebuildActive = false;
+      ResetQueuedPreviewRequest();
+		ResetActivePreviewState();
 		if (repaint)
 		{
-			EditorApplication.QueuePlayerLoopUpdate();
-			SceneView.RepaintAll();
+          RepaintScene();
 		}
 	}
 
 	private void ResetPreviewRebuildState()
 	{
-		EditorApplication.update -= DelayedRebuildPreviews;
-		EditorApplication.update -= ContinueQueuedPreviewRebuild;
+      ResetQueuedPreviewRequest();
+		ResetActivePreviewState();
 		EditorApplication.delayCall -= RunQueuedPreviewRebuild;
 		EditorApplication.delayCall -= ApplyPostRebuildSmoothing;
-		_previewRebuildQueued = false;
-		_previewRebuildDispatchQueued = false;
-		_queuedFullPreviewRebuild = false;
-		_queuedPreviewRequiresFullQuality = false;
-		_queuedPreviewPartInstanceIds.Clear();
-		_activePreviewRebuildParts = Array.Empty<Part>();
-		_activePreviewRebuildIndex = 0;
-		_activePreviewRebuildLightweight = false;
-		_activePreviewTouchedFuselage = false;
-		_activePreviewFuselagePartIds.Clear();
-		_incrementalPreviewRebuildActive = false;
 		_postRebuildSmoothingQueued = false;
 	}
 
@@ -808,14 +750,142 @@ public class Craft : MonoBehaviour
 
 	private void CancelActivePreviewRebuild()
 	{
-		EditorApplication.update -= ContinueQueuedPreviewRebuild;
+      ResetActivePreviewState();
+	}
+
+	// 清空本次排队请求的状态，让下一轮重建重新开始排队。 / Clear the queued preview request state so the next rebuild can start from a clean request.
+	private void ResetQueuedPreviewRequest()
+	{
+		SetDelayedRebuildPending(false);
+		EditorApplication.delayCall -= RunQueuedPreviewRebuild;
+		_previewRebuildQueued = false;
+		_previewRebuildDispatchQueued = false;
+		_queuedFullPreviewRebuild = false;
+		_queuedPreviewRequiresFullQuality = false;
+		_queuedPreviewPartInstanceIds.Clear();
+	}
+
+	// 清空当前分帧重建的执行进度。 / Clear the active incremental rebuild progress for the current craft.
+	private void ResetActivePreviewState()
+	{
+		SetContinueQueuedPreviewRebuildPending(false);
+		ResetActivePreviewProgress();
 		_activePreviewRebuildParts = Array.Empty<Part>();
+		_activePreviewRebuildLightweight = false;
+		_incrementalPreviewRebuildActive = false;
+	}
+
+	// 重置当前分帧重建游标和受影响机身集合。 / Reset the incremental rebuild cursor and touched fuselage tracking.
+	private void ResetActivePreviewProgress()
+	{
 		_activePreviewRebuildIndex = 0;
 		_activePreviewTouchedFuselage = false;
 		_activePreviewFuselagePartIds.Clear();
-		_incrementalPreviewRebuildActive = false;
 	}
-	#endif
+
+	// 统一刷新编辑器场景视图和玩家循环。 / Refresh the editor scene view and player loop in one place.
+	private static void RepaintScene()
+	{
+		EditorApplication.QueuePlayerLoopUpdate();
+		SceneView.RepaintAll();
+	}
+
+	// 统一的编辑器 update 入口；项目内只向 EditorApplication.update 注册这一处。 / Central editor update entry point so the whole project registers to EditorApplication.update only once.
+	public static void EditorUpdate()
+	{
+		for (int i = _editorUpdateCallbacks.Count - 1; i >= 0; i--)
+		{
+			Action callback = _editorUpdateCallbacks[i];
+			callback?.Invoke();
+		}
+
+		foreach (Craft craft in _editorUpdateCrafts.Values.ToArray())
+		{
+			if (craft == null || craft.gameObject == null)
+			{
+				continue;
+			}
+
+			craft.EditorTick();
+		}
+	}
+
+	// 注册一个通用编辑器 update 回调，供非 Craft 系统复用统一入口。 / Register a generic editor update callback so non-Craft systems can share the same single update hook.
+	public static void RegisterEditorUpdate(Action callback)
+	{
+		if (callback == null)
+		{
+			return;
+		}
+
+		EnsureEditorUpdateRegistration();
+		if (!_editorUpdateCallbacks.Contains(callback))
+		{
+			_editorUpdateCallbacks.Add(callback);
+		}
+	}
+
+	// 注销通用编辑器 update 回调。 / Unregister a generic editor update callback from the shared update loop.
+	public static void UnregisterEditorUpdate(Action callback)
+	{
+		if (callback == null)
+		{
+			return;
+		}
+
+		_editorUpdateCallbacks.Remove(callback);
+	}
+
+	// 由统一编辑器循环驱动本 Craft 的预览调度。 / Drive this craft's preview scheduling from the shared editor update loop.
+	private void EditorTick()
+	{
+		if (_delayedRebuildPending)
+		{
+			DelayedRebuildPreviews();
+		}
+
+		if (_continueQueuedPreviewRebuildPending)
+		{
+			ContinueQueuedPreviewRebuild();
+		}
+	}
+
+	// 把当前 Craft 注册到共享编辑器 update 集合。 / Register this craft with the shared editor update set.
+	private void RegisterForEditorUpdate()
+	{
+		EnsureEditorUpdateRegistration();
+		_editorUpdateCrafts[GetInstanceID()] = this;
+	}
+
+	// 从共享编辑器 update 集合移除当前 Craft。 / Remove this craft from the shared editor update set.
+	private void UnregisterFromEditorUpdate()
+	{
+		_editorUpdateCrafts.Remove(GetInstanceID());
+	}
+
+	// 确保全项目只向 EditorApplication.update 注册一次。 / Ensure the project binds to EditorApplication.update exactly once.
+	private static void EnsureEditorUpdateRegistration()
+	{
+		if (_editorUpdateRegistered)
+		{
+			return;
+		}
+
+		EditorApplication.update += EditorUpdate;
+		_editorUpdateRegistered = true;
+	}
+
+   // 设置延迟重建轮询是否应在共享 update 中继续执行。 / Set whether delayed rebuild polling should continue inside the shared editor update loop.
+	private void SetDelayedRebuildPending(bool pending)
+	{
+      _delayedRebuildPending = pending;
+	}
+
+   // 设置分帧重建是否应在共享 update 中继续执行。 / Set whether incremental preview rebuild should continue inside the shared editor update loop.
+	private void SetContinueQueuedPreviewRebuildPending(bool pending)
+	{
+     _continueQueuedPreviewRebuildPending = pending;
+	}
 
 	// 导入新飞机前先清空旧的预览子对象。 / Remove all existing preview children before importing a new aircraft.
 	private void ClearChildren()
@@ -824,11 +894,7 @@ public class Craft : MonoBehaviour
 		_partIndexDirty = true;
 		foreach (Transform child in transform.Cast<Transform>().ToArray())
 		{
-			#if UNITY_EDITOR
 			DestroyImmediate(child.gameObject);
-			#else
-			Destroy(child.gameObject);
-			#endif
 		}
 	}
 
@@ -1050,7 +1116,6 @@ public class Craft : MonoBehaviour
 
 	private static void ApplyScenePickingLock(GameObject partObject, bool locked)
 	{
-	#if UNITY_EDITOR
 		if (partObject == null)
 		{
 			return;
@@ -1064,7 +1129,6 @@ public class Craft : MonoBehaviour
 		{
 			SceneVisibilityManager.instance.EnablePicking(partObject, true);
 		}
-	#endif
 	}
 
 	private static CraftThemeMaterial[] ParseThemeMaterials(XElement themeElement)

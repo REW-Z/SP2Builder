@@ -18,6 +18,12 @@ public class ReadmeEditor : Editor
 
     static ReadmeEditor()
     {
+        Craft.RegisterEditorUpdate(SelectReadmeAutomaticallyOnce);
+    }
+
+    static void SelectReadmeAutomaticallyOnce()
+    {
+        Craft.UnregisterEditorUpdate(SelectReadmeAutomaticallyOnce);
         EditorApplication.delayCall += SelectReadmeAutomatically;
     }
 

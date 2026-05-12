@@ -251,6 +251,81 @@ namespace MeshTools
             return builder.ToMesh("MeshBoolean_" + operation);
         }
 
+        /// <summary>
+        /// 对两个 PreviewMeshData 执行布尔运算，返回结果空间下的预览数据。
+        /// </summary>
+        public static PreviewMeshData Evaluate(
+            PreviewMeshData lhs,
+            Matrix4x4 lhsToResult,
+            PreviewMeshData rhs,
+            Matrix4x4 rhsToResult,
+            MeshBooleanOperation operation)
+        {
+            MeshData lhsData = MeshToolGeometry.ParseTriangles(lhs, lhsToResult);
+            MeshData rhsData = MeshToolGeometry.ParseTriangles(rhs, rhsToResult);
+            return Evaluate(lhsData, rhsData, operation, "MeshBoolean_" + operation);
+        }
+
+        /// <summary>
+        /// 对两个 MeshData 执行布尔运算，返回结果空间下的预览数据。
+        /// </summary>
+        public static PreviewMeshData Evaluate(
+            MeshData lhs,
+            MeshData rhs,
+            MeshBooleanOperation operation,
+            string meshName = null)
+        {
+            MeshToolAttributeMask attributes = lhs.Attributes | rhs.Attributes | MeshToolAttributeMask.Normals;
+            int subMeshCount = Mathf.Max(lhs.SubMeshCount, rhs.SubMeshCount);
+
+            if (TryGetBounds(lhs.Triangles, out Bounds lhsBounds) &&
+                TryGetBounds(rhs.Triangles, out Bounds rhsBounds) &&
+                !lhsBounds.Intersects(rhsBounds))
+            {
+                MeshBuilder separatedBuilder = BuildSeparatedResultBuilder(lhs, rhs, attributes, subMeshCount, operation);
+                return separatedBuilder.ToPreviewMeshData(meshName ?? ("MeshBoolean_" + operation));
+            }
+
+            List<CsgPolygon> lhsPolygons = ToPolygons(lhs.Triangles);
+            List<CsgPolygon> rhsPolygons = ToPolygons(rhs.Triangles);
+
+            List<CsgPolygon> resultPolygons;
+            switch (operation)
+            {
+                case MeshBooleanOperation.Union:
+                    resultPolygons = UnionPolygons(lhsPolygons, rhsPolygons);
+                    break;
+                case MeshBooleanOperation.Subtract:
+                    resultPolygons = SubtractPolygons(lhsPolygons, rhsPolygons);
+                    break;
+                case MeshBooleanOperation.Intersect:
+                    resultPolygons = IntersectPolygons(lhsPolygons, rhsPolygons);
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(operation), operation, null);
+            }
+
+            MeshBuilder builder = new MeshBuilder(attributes, subMeshCount);
+            for (int i = 0; i < resultPolygons.Count; i++)
+            {
+                builder.AddPolygon(resultPolygons[i].Vertices, resultPolygons[i].SubMesh);
+            }
+
+            return builder.ToPreviewMeshData(meshName ?? ("MeshBoolean_" + operation));
+        }
+
+        /// <summary>
+        /// 对两个 PreviewMeshData 求差集，返回结果空间下的预览数据。
+        /// </summary>
+        public static PreviewMeshData Subtract(
+            PreviewMeshData lhs,
+            Matrix4x4 lhsToResult,
+            PreviewMeshData rhs,
+            Matrix4x4 rhsToResult)
+        {
+            return Evaluate(lhs, lhsToResult, rhs, rhsToResult, MeshBooleanOperation.Subtract);
+        }
+
 
         /// <summary>
         /// 包围盒已经分离时，尽量少读取三角形来直接构造结果。
@@ -334,6 +409,19 @@ namespace MeshTools
             int subMeshCount,
             MeshBooleanOperation operation)
         {
+            return BuildSeparatedResultBuilder(lhsData, rhsData, attributes, subMeshCount, operation).ToMesh("MeshBoolean_" + operation);
+        }
+
+        /// <summary>
+        /// 两个 Mesh 的包围盒已经分离时，直接构造布尔结果构建器，避免进入 BSP 重计算。
+        /// </summary>
+        private static MeshBuilder BuildSeparatedResultBuilder(
+            MeshData lhsData,
+            MeshData rhsData,
+            MeshToolAttributeMask attributes,
+            int subMeshCount,
+            MeshBooleanOperation operation)
+        {
             MeshBuilder builder = new MeshBuilder(attributes, subMeshCount);
 
             switch (operation)
@@ -354,7 +442,7 @@ namespace MeshTools
                     throw new ArgumentOutOfRangeException(nameof(operation), operation, null);
             }
 
-            return builder.ToMesh("MeshBoolean_" + operation);
+            return builder;
         }
 
 

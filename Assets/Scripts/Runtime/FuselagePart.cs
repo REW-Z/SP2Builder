@@ -1,11 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Xml.Linq;
 using UnityEngine;
-#if UNITY_EDITOR
+using MeshTools;
 using UnityEditor;
-#endif
 
 
 public enum FuselageSerializationMode
@@ -59,9 +60,12 @@ public class FuselagePart : Part
 
 	private MeshRenderer _meshRenderer;
 
-	#if UNITY_EDITOR
+	private int _meshProcessVersion;
+
+	private volatile MeshProcessJob _completedMeshJob;
+
+
 	protected override double PreviewRefreshDelaySeconds => EditorPreviewRefreshDelaySeconds;
-	#endif
 
 	// 读取机身专用 XML 状态，同时兼容 JFuselage 与 Legacy 两种格式。 / Load fuselage-specific XML state, supporting both JFuselage and legacy formats.
 	protected override void LoadPartState(XElement partElement)
@@ -135,28 +139,160 @@ public class FuselagePart : Part
 		}
 
 		Mesh previousMesh = _meshFilter.sharedMesh;
-		Mesh mesh = null;
+       QueueMeshProcess(previousMesh, capRear, capFront, applySectionCutting, applyTargetedCarvers);
+		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
+	}
 
-        //=============== 搬到工作线程 =================
-        {
-            // 先生成 loft，再做后续切削，避免法线在切削前后不一致。 / Build the loft before applying downstream carvers so normals stay consistent.
-            mesh = FuselageGeometry.BuildLoft(_rearSection, _frontSection, _offset, _visualStyle == FuselageVisualStyle.Hollow, capRear, capFront, applySectionCutting);
-
-            if(applyTargetedCarvers)
-            {
-                //切削    
-                mesh = ApplyTargetedCarvers(mesh);
-            }
-        }
-
-        //==========================================
-
-        if(mesh == null || mesh.vertexCount == 0)
+	// 在后台构建 loft/boolean 所需的数据快照，并把计算丢给线程池。 / Snapshot the fuselage inputs for loft/boolean generation and dispatch the pure data work to the thread pool.
+	private void QueueMeshProcess(Mesh previousMesh, bool capRear, bool capFront, bool applySectionCutting, bool applyTargetedCarvers)
+	{
+		MeshProcessJob job = new MeshProcessJob
 		{
-			DestroyOwnedObject(mesh);
-			if (previousMesh == null || previousMesh.vertexCount == 0)
+			rearSection = _rearSection,
+			frontSection = _frontSection,
+			offset = _offset,
+			capRear = capRear,
+			capFront = capFront,
+			applySectionCutting = applySectionCutting,
+			hollow = _visualStyle == FuselageVisualStyle.Hollow,
+			hasPreviousMesh = previousMesh != null && previousMesh.vertexCount > 0,
+			version = Interlocked.Increment(ref _meshProcessVersion),
+			worldMatrix = transform.localToWorldMatrix,
+			cutterMeshDataList = new List<MeshData>(),
+			cutterMeshMatrixList = new List<Matrix4x4>()
+		};
+
+		if (applyTargetedCarvers)
+		{
+			CollectTargetedCarvers(job);
+		}
+
+		Task.Run(() => RunMeshProcess(job));
+	}
+
+	// 在主线程收集所有目标切割体的 MeshData 和矩阵快照。 / Collect MeshData and matrix snapshots for all targeted fuselage cutters on the main thread.
+	private void CollectTargetedCarvers(MeshProcessJob job)
+	{
+		Craft craft = GetOwningCraft();
+		foreach (IFuselageCarver carver in craft.GetComponentsInChildren<MonoBehaviour>(includeInactive: true).OfType<IFuselageCarver>())
+		{
+			if (ReferenceEquals(carver, this) || carver is not Component carverComponent)
 			{
-				mesh = FuselageGeometry.BuildLoft(_rearSection, _frontSection, _offset, _visualStyle == FuselageVisualStyle.Hollow, capRear, capFront, applySectionCutting: false);
+				continue;
+			}
+
+			if (!carver.TryGetCutMesh(this, out Mesh cutterMesh) || cutterMesh == null || cutterMesh.vertexCount == 0)
+			{
+				DestroyOwnedObject(cutterMesh);
+				continue;
+			}
+
+			job.cutterMeshDataList.Add(MeshToolGeometry.ParseTriangles(cutterMesh, Matrix4x4.identity));
+			job.cutterMeshMatrixList.Add(carverComponent.transform.localToWorldMatrix);
+			DestroyOwnedObject(cutterMesh);
+		}
+	}
+
+	// 在线程池里执行纯数据 loft 与布尔计算。 / Execute loft and boolean processing as pure data work on the thread pool.
+	private void RunMeshProcess(MeshProcessJob job)
+	{
+		try
+		{
+			PreviewMeshData meshData = FuselageGeometry.BuildLoftData(job.rearSection, job.frontSection, job.offset, job.hollow, job.capRear, job.capFront, job.applySectionCutting);
+			if (job.cutterMeshDataList != null && job.cutterMeshDataList.Count > 0)
+			{
+				meshData = ApplyTargetedCarvers(job, meshData);
+			}
+
+			job.resultMeshData = meshData;
+			if (meshData == null || meshData.Vertices.Count == 0)
+			{
+				job.fallbackMeshData = FuselageGeometry.BuildLoftData(job.rearSection, job.frontSection, job.offset, job.hollow, job.capRear, job.capFront, applySectionCutting: false);
+			}
+		}
+		catch (Exception exception)
+		{
+			job.error = exception;
+		}
+
+        if (job.version == Interlocked.CompareExchange(ref _meshProcessVersion, 0, 0))
+		{
+			_completedMeshJob = job;
+		}
+	}
+
+	// 在线程池里对 PreviewMeshData 应用所有定向 cutter。 / Apply all targeted cutters to PreviewMeshData on the thread pool.
+	private static PreviewMeshData ApplyTargetedCarvers(MeshProcessJob job, PreviewMeshData source)
+	{
+		if (source == null)
+		{
+			return null;
+		}
+
+		PreviewMeshData carved = source;
+		string carvedMeshName = string.IsNullOrEmpty(source.Name) ? "FuselageCarved" : source.Name + "_Carved";
+		for (int i = 0; i < job.cutterMeshDataList.Count; i++)
+		{
+			PreviewMeshData next = MeshBoolean.Subtract(
+				carved,
+				Matrix4x4.identity,
+				ToPreviewMeshData(job.cutterMeshDataList[i], $"FuselageCutter_{i}"),
+				job.worldMatrix.inverse * job.cutterMeshMatrixList[i]);
+
+			if (next == null)
+			{
+				continue;
+			}
+
+			next.Name = carvedMeshName;
+			carved = next;
+		}
+
+		return carved;
+	}
+
+	// 把 MeshData 轻量转换成 PreviewMeshData，供后台布尔路径复用。 / Convert MeshData into PreviewMeshData so the background boolean path can reuse preview builders.
+    private static PreviewMeshData ToPreviewMeshData(MeshTools.MeshData meshData, string meshName)
+	{
+		MeshBuilder builder = new MeshBuilder(meshData.Attributes, meshData.SubMeshCount);
+		for (int i = 0; i < meshData.Triangles.Count; i++)
+		{
+			Triangle triangle = meshData.Triangles[i];
+			builder.AddTriangle(triangle.A, triangle.B, triangle.C, triangle.SubMesh);
+		}
+
+		return builder.ToPreviewMeshData(meshName);
+	}
+
+	// 在主线程消费后台任务结果并回填 sharedMesh。 / Consume completed background jobs on the main thread and assign the resulting sharedMesh.
+	private void ApplyCompletedMeshJob()
+	{
+		MeshProcessJob job = _completedMeshJob;
+		if (job == null)
+		{
+			return;
+		}
+
+		if (job.version != _meshProcessVersion)
+		{
+			_completedMeshJob = null;
+			return;
+		}
+
+		_completedMeshJob = null;
+		if (job.error != null)
+		{
+			Debug.LogException(job.error, this);
+			return;
+		}
+
+		Mesh previousMesh = _meshFilter != null ? _meshFilter.sharedMesh : null;
+		PreviewMeshData meshData = job.resultMeshData;
+		if (meshData == null || meshData.Vertices.Count == 0)
+		{
+			if (!job.hasPreviousMesh)
+			{
+				meshData = job.fallbackMeshData;
 			}
 			else
 			{
@@ -165,6 +301,13 @@ public class FuselagePart : Part
 			}
 		}
 
+		if (meshData == null || meshData.Vertices.Count == 0)
+		{
+			return;
+		}
+
+		Mesh mesh = new Mesh();
+		meshData.CopyToMesh(mesh);
 		_meshFilter.sharedMesh = mesh;
 		if (previousMesh != null && !ReferenceEquals(previousMesh, mesh))
 		{
@@ -248,6 +391,15 @@ public class FuselagePart : Part
 	{
 		CanonicalizeSections();
 		base.OnEnable();
+		Craft.RegisterEditorUpdate(ApplyCompletedMeshJob);
+	}
+
+	protected override void OnDisable()
+	{
+		Craft.UnregisterEditorUpdate(ApplyCompletedMeshJob);
+		Interlocked.Increment(ref _meshProcessVersion);
+		_completedMeshJob = null;
+       base.OnDisable();
 	}
 
 	// 在编辑器校验排队重建前，先归一化截面状态。 / Normalize section state before editor validation queues a rebuild.
@@ -599,59 +751,6 @@ public class FuselagePart : Part
 		partElement.Add(stateElement);
 	}
 
-	// 应用来自其他零件、且目标指向当前机身的切割体。 / Apply any fuselage-targeted cutting volumes contributed by other parts in the craft.
-	private Mesh ApplyTargetedCarvers(Mesh source)
-	{
-		Craft craft = GetOwningCraft();
-		if (source == null)
-		{
-			return source;
-		}
-
-		Mesh carved = source;
-		string carvedMeshName = string.IsNullOrEmpty(source.name) ? "FuselageCarved" : source.name + "_Carved";
-		bool hasBooleanCut = false;
-		// 直接对目标机身应用所有 solid cutter mesh，避免继续走自定义平面布尔封口。 / Apply all solid cutter meshes directly to the target fuselage so we stop relying on the custom plane-boolean capping path.
-		foreach (IFuselageCarver carver in craft.GetComponentsInChildren<MonoBehaviour>(includeInactive: true).OfType<IFuselageCarver>())
-		{
-			if (ReferenceEquals(carver, this))
-			{
-				continue;
-			}
-
-			if (carver is not Component carverComponent)
-			{
-				continue;
-			}
-
-			if (!carver.TryGetCutMesh(this, out Mesh cutterMesh) || cutterMesh == null || cutterMesh.vertexCount == 0)
-			{
-				DestroyOwnedObject(cutterMesh);
-				continue;
-			}
-
-			//布尔Subtract    
-			Mesh next = MeshTools.MeshBoolean.Subtract(carved, transform, cutterMesh, carverComponent.transform, transform);
-
-            DestroyOwnedObject(cutterMesh);
-			if (next == null || ReferenceEquals(next, carved))
-			{
-				continue;
-			}
-
-			next.name = carvedMeshName;
-			DestroyOwnedObject(carved);
-			carved = next;
-			hasBooleanCut = true;
-		}
-
-		if (!hasBooleanCut)
-		{
-			return source;
-		}
-
-		return carved;
-	}
 
 	// 找到第一个与当前端面足够吻合、可以共享接缝的邻接机身端面。 / Find the first fuselage end that matches this end closely enough to share a seam.
 	private bool TryFindMatchingNeighbour(bool front, out FuselagePart neighbour, out bool neighbourFront)

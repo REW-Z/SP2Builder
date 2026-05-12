@@ -1,9 +1,6 @@
 using System;
 using UnityEngine;
-
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 namespace MeshTools
 {
@@ -18,11 +15,9 @@ namespace MeshTools
         private Action pendingAction;
         private bool queued;
         private bool running;
-#if UNITY_EDITOR
         private double requestedAt;
         private double editModeDelaySeconds = 0.15d;
         private bool autoRunInEditMode = true;
-#endif
 
         /// <summary>
         /// 请求执行一次重建；编辑模式下会等请求安静一小段时间，运行模式下立即执行。
@@ -48,7 +43,6 @@ namespace MeshTools
             this.owner = owner;
             pendingAction = action;
 
-#if UNITY_EDITOR
             requestedAt = EditorApplication.timeSinceStartup;
             this.editModeDelaySeconds = Math.Max(0d, editModeDelaySeconds);
             this.autoRunInEditMode = autoRunInEditMode;
@@ -56,16 +50,13 @@ namespace MeshTools
 
             if (!autoRunInEditMode)
             {
-                EditorApplication.update -= RunPendingWhenQuiet;
+                Craft.UnregisterEditorUpdate(RunPendingWhenQuiet);
                 EditorApplication.delayCall -= RunPendingNow;
                 return;
             }
 
-            EditorApplication.update += RunPendingWhenQuiet;
+            Craft.RegisterEditorUpdate(RunPendingWhenQuiet);
             return;
-#endif
-
-            RunNow(action);
         }
 
         /// <summary>
@@ -73,10 +64,8 @@ namespace MeshTools
         /// </summary>
         public void Cancel()
         {
-#if UNITY_EDITOR
-            EditorApplication.update -= RunPendingWhenQuiet;
+            Craft.UnregisterEditorUpdate(RunPendingWhenQuiet);
             EditorApplication.delayCall -= RunPendingNow;
-#endif
             queued = false;
             pendingAction = null;
             owner = null;
@@ -87,10 +76,8 @@ namespace MeshTools
         /// </summary>
         public void Flush()
         {
-#if UNITY_EDITOR
-            EditorApplication.update -= RunPendingWhenQuiet;
+            Craft.UnregisterEditorUpdate(RunPendingWhenQuiet);
             EditorApplication.delayCall -= RunPendingNow;
-#endif
             if (!queued)
             {
                 return;
@@ -116,7 +103,6 @@ namespace MeshTools
             get { return queued; }
         }
 
-#if UNITY_EDITOR
         /// <summary>
         /// 等到编辑器请求安静后，执行最后一次重建请求。
         /// </summary>
@@ -124,7 +110,7 @@ namespace MeshTools
         {
             if (!queued)
             {
-                EditorApplication.update -= RunPendingWhenQuiet;
+                Craft.UnregisterEditorUpdate(RunPendingWhenQuiet);
                 return;
             }
 
@@ -135,11 +121,11 @@ namespace MeshTools
 
             if (!autoRunInEditMode)
             {
-                EditorApplication.update -= RunPendingWhenQuiet;
+                Craft.UnregisterEditorUpdate(RunPendingWhenQuiet);
                 return;
             }
 
-            EditorApplication.update -= RunPendingWhenQuiet;
+            Craft.UnregisterEditorUpdate(RunPendingWhenQuiet);
             EditorApplication.delayCall -= RunPendingNow;
             EditorApplication.delayCall += RunPendingNow;
         }
@@ -167,7 +153,6 @@ namespace MeshTools
 
             RunNow(action);
         }
-#endif
 
         /// <summary>
         /// 带重入保护地执行实际重建逻辑。

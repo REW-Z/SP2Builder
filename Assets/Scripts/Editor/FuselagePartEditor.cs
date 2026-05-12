@@ -26,6 +26,8 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 	private bool _showFrontSection = true;
 
+	private static readonly Dictionary<string, bool> SectionFoldouts = new Dictionary<string, bool>();
+
 	// 绘制机身自定义 Inspector，并在数值变化时触发预览重建。 / Draw the custom fuselage inspector and trigger preview rebuilds when values change.
 	public override void OnInspectorGUI()
 	{
@@ -120,20 +122,47 @@ public class FuselagePartEditor : UnityEditor.Editor
 	private static void DrawSection(SerializedProperty section)
 	{
 		EditorGUI.indentLevel++;
-		EditorGUILayout.PropertyField(section.FindPropertyRelative("Width"));
-		EditorGUILayout.PropertyField(section.FindPropertyRelative("Height"));
-		EditorGUILayout.PropertyField(section.FindPropertyRelative("Trapezium"));
-		EditorGUILayout.PropertyField(section.FindPropertyRelative("Thickness"));
-		EditorGUILayout.PropertyField(section.FindPropertyRelative("Smooth"));
-		DrawCornerStyleGroup(section);
-		DrawInt4Group(section.FindPropertyRelative("CornerSamples"), "Corner Samples", CornerNames);
-		DrawFloat4Group(section.FindPropertyRelative("EdgeCurvature"), "Edge Curvature", EdgeNames);
-		DrawInt4Group(section.FindPropertyRelative("EdgeSamples"), "Edge Samples", EdgeNames);
-		DrawCuttingGroup(section);
+       DrawSectionGroup(section, "BaseInfos", draw: () =>
+		{
+			EditorGUILayout.PropertyField(section.FindPropertyRelative("Width"));
+			EditorGUILayout.PropertyField(section.FindPropertyRelative("Height"));
+			EditorGUILayout.PropertyField(section.FindPropertyRelative("Trapezium"));
+			EditorGUILayout.PropertyField(section.FindPropertyRelative("Thickness"));
+			EditorGUILayout.PropertyField(section.FindPropertyRelative("Smooth"));
+		});
+		DrawSectionGroup(section, "Corners", draw: () =>
+		{
+			DrawCornerStyleGroup(section);
+			DrawInt4Group(section.FindPropertyRelative("CornerSamples"), "Corner Samples", CornerNames);
+		});
+		DrawSectionGroup(section, "Edges", draw: () =>
+		{
+			DrawFloat4Group(section.FindPropertyRelative("EdgeCurvature"), "Edge Curvature", EdgeNames);
+			DrawInt4Group(section.FindPropertyRelative("EdgeSamples"), "Edge Samples", EdgeNames);
+		});
+		DrawSectionGroup(section, "Slices", draw: () =>
+		{
+			DrawCuttingGroup(section);
+		});
 		EditorGUI.indentLevel--;
 	}
 
-	// 按原版的 nullable cutting 语义绘制每边的启用开关和动态范围。 / Draw per-side cut toggles with the original nullable cutting semantics and dynamic ranges.
+	// 把截面 Inspector 分成可折叠的小组，减少一次性绘制控件数量。 / Split section inspector UI into foldout groups to reduce the amount of controls drawn at once.
+	private static void DrawSectionGroup(SerializedProperty section, string groupName, System.Action draw)
+	{
+		string key = section.propertyPath + "." + groupName;
+		bool expanded = GetSectionFoldout(key, defaultValue: groupName == "BaseInfos");
+        expanded = EditorGUILayout.Foldout(expanded, groupName, true);
+		SetSectionFoldout(key, expanded);
+		if (expanded)
+		{
+         EditorGUI.indentLevel++;
+			draw();
+           EditorGUI.indentLevel--;
+		}
+	}
+
+ // 按当前编辑器语义绘制每边切割：滑块大于 0 即自动启用，回到 0 则关闭。 / Draw per-side slice controls so values above zero enable cutting and zero disables it.
 	private static void DrawCuttingGroup(SerializedProperty section)
 	{
 		SerializedProperty cutEnabled = section.FindPropertyRelative("CutEnabled");
@@ -154,36 +183,31 @@ public class FuselagePartEditor : UnityEditor.Editor
 		EditorGUI.indentLevel--;
 	}
 
-	// 用“启用 + 值”的方式绘制单边切割，并把首次启用时的默认值放在 minCutting。 / Draw one cut side as enabled plus value, defaulting first enable to minCutting.
+   // 把单边切割画成纯滑块，值回到 0 时自动清除启用状态。 / Draw one cut side as a pure slider that automatically clears the enabled flag at zero.
 	private static void DrawCutField(SerializedProperty enabledProperty, SerializedProperty valueProperty, string label, float minCutting, float maxCutting)
 	{
-		bool enabled = enabledProperty.boolValue;
-		float clampedValue = Mathf.Clamp(valueProperty.floatValue, minCutting, maxCutting);
-
+     float currentValue = enabledProperty.boolValue ? Mathf.Clamp01(valueProperty.floatValue) : 0f;
 		EditorGUILayout.BeginHorizontal();
-		bool newEnabled = EditorGUILayout.ToggleLeft(label, enabled, GUILayout.Width(78f));
-		float displayedValue = enabled ? clampedValue : minCutting;
-		float editedValue;
-		using (new EditorGUI.DisabledScope(!newEnabled))
-		{
-			editedValue = EditorGUILayout.Slider(displayedValue, minCutting, maxCutting);
-			editedValue = EditorGUILayout.FloatField(editedValue, GUILayout.Width(64f));
-		}
+     float editedValue = EditorGUILayout.Slider(label, currentValue, 0f, 1f);
+		editedValue = EditorGUILayout.FloatField(editedValue, GUILayout.Width(64f));
 		EditorGUILayout.EndHorizontal();
 
-		if (newEnabled != enabled)
-		{
-			enabledProperty.boolValue = newEnabled;
-			if (newEnabled)
-			{
-				valueProperty.floatValue = enabled ? clampedValue : minCutting;
-			}
-		}
+       float clampedValue = Mathf.Clamp01(editedValue);
+		bool enabled = clampedValue > 0.0001f;
+		enabledProperty.boolValue = enabled;
+        valueProperty.floatValue = enabled ? Mathf.Clamp(clampedValue, minCutting, maxCutting) : 0f;
+	}
 
-		if (newEnabled)
-		{
-			valueProperty.floatValue = Mathf.Clamp(editedValue, minCutting, maxCutting);
-		}
+	// 读取一个截面小组的折叠状态。 / Read the persisted foldout state for one section group.
+	private static bool GetSectionFoldout(string key, bool defaultValue)
+	{
+		return SectionFoldouts.TryGetValue(key, out bool expanded) ? expanded : defaultValue;
+	}
+
+	// 保存一个截面小组的折叠状态。 / Store the persisted foldout state for one section group.
+	private static void SetSectionFoldout(string key, bool expanded)
+	{
+		SectionFoldouts[key] = expanded;
 	}
 
 	// 把每个 corner 画成“模式 + 单一数值”，而不是拆开的半径和 stretch 字段。 / Draw each corner as a shared mode-plus-value pair instead of separate radius and stretch fields.

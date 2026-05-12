@@ -7,6 +7,7 @@ UserSettings/*
 ProjectSettings/*
 Temp/*
 Assets/Scenes/Crafts/*
+Assets/Crafts/*
 PROJECT_ARCHITECTURE.md
 *.csproj
 *.slnx

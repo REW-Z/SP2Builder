@@ -1999,7 +1999,7 @@ internal static class FuselageGeometry
 		return new ClipBounds(minX, minY, maxX, maxY);
 	}
 
-	// 根据前后两个截面的 cutting 参数构建真实 3D 切割体的六个平面。 / Build the six planes of the true 3D cutting volume from the rear and front section cutting parameters.
+   // 根据前后两个截面的 cutting 参数构建真实 3D 切割体的四个侧面平面。 / Build the four side planes of the true 3D cutting volume from the rear and front section cutting parameters.
 	private static bool TryBuildSectionCutPlanes(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, out Plane[] planes)
 	{
 		planes = null;
@@ -2034,11 +2034,7 @@ internal static class FuselageGeometry
 		}
 		insidePoint /= vertices.Length;
 
-		List<Plane> cutPlanes = new List<Plane>(6)
-		{
-			CreateInwardFacingPlane(vertices[0], vertices[1], vertices[2], insidePoint),
-			CreateInwardFacingPlane(vertices[4], vertices[7], vertices[6], insidePoint)
-		};
+       List<Plane> cutPlanes = new List<Plane>(4);
 		if (rear.GetCutEnabled(1) || front.GetCutEnabled(1))
 		{
 			cutPlanes.Add(CreateInwardFacingPlane(vertices[0], vertices[4], vertices[5], insidePoint));
@@ -2073,7 +2069,7 @@ internal static class FuselageGeometry
 	// 用凸切割体对网格做真正的保留式裁切，得到真实切口而不是截面挤压。 / Intersect a mesh with a convex keep-volume to produce a true cut instead of squeezing the section profile.
 	public static Mesh IntersectConvexVolume(Mesh source, Plane[] planes, string meshName)
 	{
-		if (source == null || planes == null || planes.Length == 0)
+     if (source == null || planes == null || planes.Length == 0)
 		{
 			return source;
 		}
@@ -2081,7 +2077,7 @@ internal static class FuselageGeometry
 		Mesh working = source;
 		for (int planeIndex = 0; planeIndex < planes.Length; planeIndex++)
 		{
-			// 当前 slice keep-volume 的内部定义为各 inward-facing plane 的非正侧，因此逐平面保留 negative side，并让 MeshPlaneSlicer 负责每一步的 cap。 / The slice keep-volume interior is the non-positive side of each inward-facing plane, so keep the negative side plane by plane and let MeshPlaneSlicer cap each cut.
+			// 按 keep-volume 的每个 inward-facing plane 逐次保留 negative side，并让 MeshPlaneSlicer 在每一步补 cap。 / Keep the negative side of each inward-facing plane in sequence and let MeshPlaneSlicer cap each cut.
 			Mesh next = MeshTools.MeshPlaneSlicer.Cut(working, planes[planeIndex], keepPositive: false, cap: true);
 			if (next == null)
 			{
@@ -2106,7 +2102,7 @@ internal static class FuselageGeometry
 
 	public static PreviewMeshData IntersectConvexVolume(PreviewMeshData source, Plane[] planes, string meshName)
 	{
-		if (source == null || planes == null || planes.Length == 0)
+     if (source == null || planes == null || planes.Length == 0)
 		{
 			return source;
 		}
@@ -2139,11 +2135,7 @@ internal static class FuselageGeometry
 			return;
 		}
 
-		#if UNITY_EDITOR
 		UnityEngine.Object.DestroyImmediate(mesh);
-		#else
-		UnityEngine.Object.Destroy(mesh);
-		#endif
 	}
 
 	public static Mesh SubtractConvexVolumes(Mesh source, IReadOnlyList<Plane[]> volumes, string meshName)

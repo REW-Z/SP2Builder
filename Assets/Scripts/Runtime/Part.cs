@@ -3,9 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Xml.Linq;
 using UnityEngine;
-#if UNITY_EDITOR
 using UnityEditor;
-#endif
 
 
 public interface IPartXmlExtension
@@ -92,9 +90,7 @@ public abstract class Part : MonoBehaviour
 
 	private bool _previewRefreshQueued;
 
-	#if UNITY_EDITOR
 	private double _previewRefreshDueTime;
-	#endif
 
 	public int OrderIndex => _orderIndex;
 
@@ -112,9 +108,7 @@ public abstract class Part : MonoBehaviour
 
 	public IReadOnlyList<PartConnectionEndpoint> ConnectionEndpoints => _connectionEndpoints;
 
-	#if UNITY_EDITOR
 	protected virtual double PreviewRefreshDelaySeconds => 0d;
-	#endif
 
 	public int PrimaryMaterialId
 	{
@@ -224,11 +218,7 @@ public abstract class Part : MonoBehaviour
 			return;
 		}
 
-		#if UNITY_EDITOR
 		DestroyImmediate(obj);
-		#else
-		Destroy(obj);
-		#endif
 	}
 
 	// 在编辑器字段变更时同步对象名和预览。 / Keep editor object names and previews synchronized with serialized field edits.
@@ -242,6 +232,13 @@ public abstract class Part : MonoBehaviour
 	protected virtual void OnEnable()
 	{
 		QueuePreviewRefresh();
+	}
+
+	// 当 Part 被禁用时取消挂起的编辑器预览回调。 / Cancel any pending editor preview callback when the part is disabled.
+	protected virtual void OnDisable()
+	{
+		Craft.UnregisterEditorUpdate(DelayedRefreshPreview);
+		_previewRefreshQueued = false;
 	}
 
 	// 延迟解析预览所需组件，缺失时自动补齐。 / Lazily resolve required preview components, creating them if necessary.
@@ -398,7 +395,6 @@ public abstract class Part : MonoBehaviour
 		return transform.TransformPoint(GetAttachPointLocalPosition(attachPointId));
 	}
 
-	#if UNITY_EDITOR
 	protected virtual void OnDrawGizmosSelected()
 	{
 		Event currentEvent = Event.current;
@@ -442,7 +438,6 @@ public abstract class Part : MonoBehaviour
 		}
 		Handles.color = previousColor;
 	}
-	#endif
 
 	// 读取所有 Part 通用的目标选择元数据。 / Read targeting metadata shared by all part types.
 	private void LoadTargetingState(XElement partElement)
@@ -664,7 +659,6 @@ public abstract class Part : MonoBehaviour
 	// 把多次编辑器预览刷新请求合并成一次延迟执行。 / Coalesce editor preview refresh requests into a single delayed execution.
 	protected void QueuePreviewRefresh()
 	{
-	#if UNITY_EDITOR
 		Craft craft = GetOwningCraft();
 		if (craft.IsRebuildingPreviews || craft.IsPreviewQueueSuppressed)
 		{
@@ -678,13 +672,9 @@ public abstract class Part : MonoBehaviour
 		}
 
 		_previewRefreshQueued = true;
-		EditorApplication.update += DelayedRefreshPreview;
-	#else
-		RefreshPreviewInternal();
-	#endif
+        Craft.RegisterEditorUpdate(DelayedRefreshPreview);
 	}
 
-	#if UNITY_EDITOR
 	// 如果存在所属 Craft，则把延迟刷新路由到整机重建。 / Route delayed editor refreshes through the owning craft when one exists.
 	private void DelayedRefreshPreview()
 	{
@@ -693,7 +683,7 @@ public abstract class Part : MonoBehaviour
 			return;
 		}
 
-		EditorApplication.update -= DelayedRefreshPreview;
+      Craft.UnregisterEditorUpdate(DelayedRefreshPreview);
 		_previewRefreshQueued = false;
 
 		if (this == null || gameObject == null)
@@ -704,7 +694,6 @@ public abstract class Part : MonoBehaviour
 		Craft craft = GetOwningCraft();
 		craft.QueuePreviewRebuildForPart(this, 0d, lightweight: this is FuselagePart);
 	}
-	#endif
 
 	// 保持 GameObject 名称与导入的零件身份一致。 / Keep the GameObject name aligned with the imported part identity.
 	private void ApplyObjectName()
@@ -727,13 +716,11 @@ public class OtherPart : Part
 
 	private void OnDrawGizmos()
 	{
-	#if UNITY_EDITOR
 		Event currentEvent = Event.current;
 		if (currentEvent != null && currentEvent.type != EventType.Repaint)
 		{
 			return;
 		}
-	#endif
 		Gizmos.color = new Color(0.65f, 0.75f, 0.95f, 0.75f);
 		Matrix4x4 oldMatrix = Gizmos.matrix;
 		Gizmos.matrix = transform.localToWorldMatrix;
@@ -893,7 +880,6 @@ public class LabelState : MonoBehaviour, IPartXmlExtension
 	// 在编辑器中合并多次标签预览刷新请求。 / Coalesce label preview updates in the editor.
 	private void QueuePreviewRefresh()
 	{
-	#if UNITY_EDITOR
 		if (_previewRefreshQueued)
 		{
 			return;
@@ -901,12 +887,8 @@ public class LabelState : MonoBehaviour, IPartXmlExtension
 
 		_previewRefreshQueued = true;
 		EditorApplication.delayCall += DelayedRefreshPreview;
-	#else
-		RefreshPreview();
-	#endif
 	}
 
-	#if UNITY_EDITOR
 	// 在编辑器空闲时执行延迟的标签预览刷新。 / Execute the queued label preview refresh once the editor is idle.
 	private void DelayedRefreshPreview()
 	{
@@ -920,5 +902,4 @@ public class LabelState : MonoBehaviour, IPartXmlExtension
 
 		RefreshPreview();
 	}
-	#endif
 }
