@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.Rendering;
 
 
 [Serializable]
@@ -422,19 +421,6 @@ internal static class FuselageGeometry
 		public Vector2 Position { get; }
 
 		public Vector2 Tangent { get; }
-	}
-
-	private readonly struct ClippedVertex
-	{
-		public ClippedVertex(Vector3 position, Vector3 normal)
-		{
-			Position = position;
-			Normal = normal.sqrMagnitude <= Epsilon ? Vector3.forward : normal.normalized;
-		}
-
-		public Vector3 Position { get; }
-
-		public Vector3 Normal { get; }
 	}
 
 		// 默认启用前后两个端盖，构建完整 loft。 / Build a fully capped loft using both end caps by default.
@@ -2136,114 +2122,6 @@ internal static class FuselageGeometry
 		}
 
 		UnityEngine.Object.DestroyImmediate(mesh);
-	}
-
-	public static Mesh SubtractConvexVolumes(Mesh source, IReadOnlyList<Plane[]> volumes, string meshName)
-	{
-		return MeshBooleanUtility.SubtractConvexVolumes(source, volumes, meshName);
-	}
-
-	private static void SubtractConvexPolygon(List<ClippedVertex> polygon, Plane[] planes, int planeIndex, List<List<ClippedVertex>> output)
-	{
-		if (polygon.Count < 3)
-		{
-			return;
-		}
-		if (planeIndex >= planes.Length)
-		{
-			return;
-		}
-
-		SplitPolygonByPlane(polygon, planes[planeIndex], out List<ClippedVertex> outside, out List<ClippedVertex> inside);
-		if (outside.Count >= 3)
-		{
-			output.Add(outside);
-		}
-		if (inside.Count >= 3)
-		{
-			SubtractConvexPolygon(inside, planes, planeIndex + 1, output);
-		}
-	}
-
-	private static void SplitPolygonByPlane(List<ClippedVertex> polygon, Plane plane, out List<ClippedVertex> outside, out List<ClippedVertex> inside)
-	{
-		outside = new List<ClippedVertex>(polygon.Count + 1);
-		inside = new List<ClippedVertex>(polygon.Count + 1);
-		for (int i = 0; i < polygon.Count; i++)
-		{
-			ClippedVertex previous = polygon[(i - 1 + polygon.Count) % polygon.Count];
-			ClippedVertex current = polygon[i];
-			float previousDistance = plane.GetDistanceToPoint(previous.Position);
-			float currentDistance = plane.GetDistanceToPoint(current.Position);
-			bool previousOutside = previousDistance > Epsilon;
-			bool currentOutside = currentDistance > Epsilon;
-
-			if (previousOutside != currentOutside)
-			{
-				float t = previousDistance / (previousDistance - currentDistance);
-				ClippedVertex intersection = new ClippedVertex(
-					Vector3.Lerp(previous.Position, current.Position, Mathf.Clamp01(t)),
-					Vector3.Lerp(previous.Normal, current.Normal, Mathf.Clamp01(t)).normalized);
-				AddUnique(outside, intersection);
-				AddUnique(inside, intersection);
-			}
-
-			if (currentOutside)
-			{
-				AddUnique(outside, current);
-			}
-			else
-			{
-				AddUnique(inside, current);
-			}
-		}
-
-		RemoveNearDuplicateLoopPoints(outside);
-		RemoveNearDuplicateLoopPoints(inside);
-	}
-
-	private static void RemoveNearDuplicateLoopPoints(List<ClippedVertex> points)
-	{
-		for (int i = points.Count - 1; i >= 0; i--)
-		{
-			Vector3 current = points[i].Position;
-			Vector3 next = points[(i + 1) % points.Count].Position;
-			if (Vector3.Distance(current, next) <= Epsilon)
-			{
-				points.RemoveAt(i);
-			}
-		}
-	}
-
-	private static void AddUnique(List<ClippedVertex> points, ClippedVertex point)
-	{
-		if (points.Count > 0 && Vector3.Distance(points[^1].Position, point.Position) <= Epsilon)
-		{
-			return;
-		}
-		points.Add(point);
-	}
-
-	private static void RemoveNearDuplicateLoopPoints(List<Vector3> points)
-	{
-		for (int i = points.Count - 1; i >= 0; i--)
-		{
-			Vector3 current = points[i];
-			Vector3 next = points[(i + 1) % points.Count];
-			if (Vector3.Distance(current, next) <= Epsilon)
-			{
-				points.RemoveAt(i);
-			}
-		}
-	}
-
-	private static void AddUnique(List<Vector3> points, Vector3 point)
-	{
-		if (points.Count > 0 && Vector3.Distance(points[^1], point) <= Epsilon)
-		{
-			return;
-		}
-		points.Add(point);
 	}
 
 	private static float Cross(Vector2 a, Vector2 b)

@@ -189,9 +189,6 @@ namespace MeshTools
             Matrix4x4 rhsToResult,
             MeshBooleanOperation operation)
         {
-            using StopWatch _ = new("Evaluate");
-            
-
             // 先用 Mesh 自带 bounds 做最快的分离测试，避免分离物体还去展开所有三角形和构建 BSP。
             Bounds lhsFastBounds;
             Bounds rhsFastBounds;
@@ -246,9 +243,10 @@ namespace MeshTools
                 builder.AddPolygon(resultPolygons[i].Vertices, resultPolygons[i].SubMesh);
             }
 
+            var mesh = builder.ToMesh("MeshBoolean_" + operation);
 
 
-            return builder.ToMesh("MeshBoolean_" + operation);
+            return mesh;
         }
 
         /// <summary>
@@ -286,11 +284,12 @@ namespace MeshTools
                 return separatedBuilder.ToPreviewMeshData(meshName ?? ("MeshBoolean_" + operation));
             }
 
+
             List<CsgPolygon> lhsPolygons = ToPolygons(lhs.Triangles);
             List<CsgPolygon> rhsPolygons = ToPolygons(rhs.Triangles);
 
             List<CsgPolygon> resultPolygons;
-            switch (operation)
+            switch(operation)
             {
                 case MeshBooleanOperation.Union:
                     resultPolygons = UnionPolygons(lhsPolygons, rhsPolygons);
@@ -305,13 +304,16 @@ namespace MeshTools
                     throw new ArgumentOutOfRangeException(nameof(operation), operation, null);
             }
 
+
             MeshBuilder builder = new MeshBuilder(attributes, subMeshCount);
             for (int i = 0; i < resultPolygons.Count; i++)
             {
                 builder.AddPolygon(resultPolygons[i].Vertices, resultPolygons[i].SubMesh);
             }
 
-            return builder.ToPreviewMeshData(meshName ?? ("MeshBoolean_" + operation));
+            var meshData = builder.ToPreviewMeshData(meshName ?? ("MeshBoolean_" + operation));
+
+            return meshData;
         }
 
         /// <summary>
@@ -578,7 +580,8 @@ namespace MeshTools
             a.Build(b.AllPolygons());
             a.Invert();
 
-            return a.AllPolygons();
+            var rs = a.AllPolygons();
+            return rs;
         }
 
         /// <summary>
