@@ -1036,7 +1036,7 @@ public class FuselagePart : Part
 
 	private Vector3 GetMidSectionSidePoint(int sideIndex)
 	{
-		FuselageSectionSettings section = FuselageSectionSettings.Lerp(_rearSection, _frontSection, 0.5f, Int4Value.Max(_rearSection.CornerSamples, _frontSection.CornerSamples), Int4Value.Max(_rearSection.EdgeSamples, _frontSection.EdgeSamples));
+		FuselageSectionSettings section = FuselageSectionSettings.Lerp(_rearSection, _frontSection, 0.5f);
 		float halfHeight = section.Height * 0.5f;
 		float topHalfWidth = section.Width * 0.5f * Mathf.Max(0f, 1f + section.Trapezium);
 		float bottomHalfWidth = section.Width * 0.5f * Mathf.Max(0f, 1f - section.Trapezium);

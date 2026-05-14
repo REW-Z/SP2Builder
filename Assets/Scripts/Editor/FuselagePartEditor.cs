@@ -133,12 +133,10 @@ public class FuselagePartEditor : UnityEditor.Editor
 		DrawSectionGroup(section, "Corners", draw: () =>
 		{
 			DrawCornerStyleGroup(section);
-			DrawInt4Group(section.FindPropertyRelative("CornerSamples"), "Corner Samples", CornerNames);
 		});
 		DrawSectionGroup(section, "Edges", draw: () =>
 		{
 			DrawFloat4Group(section.FindPropertyRelative("EdgeCurvature"), "Edge Curvature", EdgeNames);
-			DrawInt4Group(section.FindPropertyRelative("EdgeSamples"), "Edge Samples", EdgeNames);
 		});
 		DrawSectionGroup(section, "Slices", draw: () =>
 		{
@@ -280,8 +278,6 @@ public class FuselagePartEditor : UnityEditor.Editor
 			CornerRadii = ReadFloat4(section.FindPropertyRelative("CornerRadii")),
 			CornerStretch = ReadBool4(section.FindPropertyRelative("CornerStretch")),
 			EdgeCurvature = ReadFloat4(section.FindPropertyRelative("EdgeCurvature")),
-			CornerSamples = ReadInt4(section.FindPropertyRelative("CornerSamples")),
-			EdgeSamples = ReadInt4(section.FindPropertyRelative("EdgeSamples")),
 			CutEnabled = ReadBool4(section.FindPropertyRelative("CutEnabled")),
 			CutTop = section.FindPropertyRelative("CutTop").floatValue,
 			CutRight = section.FindPropertyRelative("CutRight").floatValue,

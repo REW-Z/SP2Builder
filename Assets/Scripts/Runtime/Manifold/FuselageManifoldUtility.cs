@@ -96,21 +96,23 @@ namespace SP2Builder.ManifoldRuntime
 				using ManifoldHandle sourceManifold = ManifoldHandle.Create(source, out ManifoldError sourceStatus);
 				if (!IsUsable(sourceManifold, sourceStatus))
 				{
+					PreviewMeshData fallback = TryFallbackTargetedBoolean(source, cutter, cutterToSource, operation, meshName, context, $"source build failed: {sourceStatus}");
+					if (fallback != null)
+					{
+						return fallback;
+					}
 					Debug.LogWarning($"manifold source build failed during {context}: {sourceStatus}");
 					return null;
 				}
 
-				using ManifoldHandle cutterLocalManifold = ManifoldHandle.Create(cutter, out ManifoldError cutterStatus);
-				if (!IsUsable(cutterLocalManifold, cutterStatus))
+				using ManifoldHandle cutterManifold = CreateBooleanCutterManifold(cutter, cutterToSource, context);
+				if (cutterManifold == null)
 				{
-					Debug.LogWarning($"manifold cutter build failed during {context}: {cutterStatus}");
-					return null;
-				}
-
-				using ManifoldHandle cutterManifold = cutterLocalManifold.Transform(cutterToSource);
-				if (!IsUsable(cutterManifold, cutterManifold?.Status ?? ManifoldError.INVALID_CONSTRUCTION))
-				{
-					Debug.LogWarning($"manifold cutter transform failed during {context}: {cutterManifold?.Status ?? ManifoldError.INVALID_CONSTRUCTION}");
+					PreviewMeshData fallback = TryFallbackTargetedBoolean(source, cutter, cutterToSource, operation, meshName, context, "cutter manifold build/transform failed");
+					if (fallback != null)
+					{
+						return fallback;
+					}
 					return null;
 				}
 
@@ -121,6 +123,11 @@ namespace SP2Builder.ManifoldRuntime
 				ManifoldError resultStatus = result?.Status ?? ManifoldError.INVALID_CONSTRUCTION;
 				if (result == null || resultStatus != ManifoldError.NO_ERROR)
 				{
+					PreviewMeshData fallback = TryFallbackTargetedBoolean(source, cutter, cutterToSource, operation, meshName, context, $"{operation} failed: {resultStatus}");
+					if (fallback != null)
+					{
+						return fallback;
+					}
 					Debug.LogWarning($"manifold {operation} failed during {context}: {resultStatus}");
 					return null;
 				}
@@ -142,12 +149,69 @@ namespace SP2Builder.ManifoldRuntime
 			}
 		}
 
+		private static PreviewMeshData TryFallbackTargetedBoolean(PreviewMeshData source, PreviewMeshData cutter, Matrix4x4 cutterToSource, ManifoldOpType operation, string meshName, string context, string failureReason)
+		{
+			if (operation != ManifoldOpType.SUBTRACT || !string.Equals(context, "targeted cutter boolean", StringComparison.OrdinalIgnoreCase))
+			{
+				return null;
+			}
+
+			try
+			{
+				PreviewMeshData fallback = MeshTools.ManifoldBoolean.Subtract(source, Matrix4x4.identity, cutter, cutterToSource);
+				if (fallback != null && fallback.Vertices.Count > 0)
+				{
+					fallback.Name = meshName;
+					Debug.LogWarning($"falling back to MeshTools manifold boolean during {context}: {failureReason}");
+					return fallback;
+				}
+			}
+			catch (Exception exception) when (
+				exception is DllNotFoundException
+				|| exception is EntryPointNotFoundException
+				|| exception is BadImageFormatException)
+			{
+				ManifoldRuntimeAvailability.LogUnavailableOnce(context + " fallback");
+			}
+
+			return null;
+		}
+
 		private static bool IsUsable(ManifoldHandle manifold, ManifoldError status)
 		{
 			return manifold != null
 				&& status == ManifoldError.NO_ERROR
 				&& !manifold.IsEmpty
 				&& manifold.Volume >= MinimumValidVolume;
+		}
+
+		private static ManifoldHandle CreateBooleanCutterManifold(PreviewMeshData cutter, Matrix4x4 cutterToSource, string context)
+		{
+			using ManifoldHandle cutterLocalManifold = ManifoldHandle.Create(cutter, out ManifoldError cutterStatus);
+			if (!IsUsable(cutterLocalManifold, cutterStatus))
+			{
+				Debug.LogWarning($"manifold cutter build failed during {context}: {cutterStatus}");
+				return null;
+			}
+
+			ManifoldHandle transformedCutter = cutterLocalManifold.Transform(cutterToSource);
+			ManifoldError transformStatus = transformedCutter?.Status ?? ManifoldError.INVALID_CONSTRUCTION;
+			if (IsUsable(transformedCutter, transformStatus))
+			{
+				return transformedCutter;
+			}
+
+			transformedCutter?.Dispose();
+			PreviewMeshData bakedCutter = BakePreviewMeshTransform(cutter, cutterToSource);
+			ManifoldHandle bakedCutterManifold = ManifoldHandle.Create(bakedCutter, out ManifoldError bakedStatus);
+			if (IsUsable(bakedCutterManifold, bakedStatus))
+			{
+				return bakedCutterManifold;
+			}
+
+			bakedCutterManifold?.Dispose();
+			Debug.LogWarning($"manifold cutter transform failed during {context}: {transformStatus}; baked transform fallback failed: {bakedStatus}");
+			return null;
 		}
 
 		private static PreviewMeshData ToPreviewMeshData(ManifoldHandle manifold, string meshName)
@@ -158,6 +222,57 @@ namespace SP2Builder.ManifoldRuntime
 				output.Name = meshName;
 			}
 			return output;
+		}
+
+		private static PreviewMeshData BakePreviewMeshTransform(PreviewMeshData source, Matrix4x4 transform)
+		{
+			PreviewMeshData transformed = new PreviewMeshData(string.IsNullOrWhiteSpace(source?.Name) ? "PreviewMesh" : source.Name + "_Baked");
+			if (source == null)
+			{
+				return transformed;
+			}
+
+			for (int i = 0; i < source.Vertices.Count; i++)
+			{
+				transformed.Vertices.Add(transform.MultiplyPoint3x4(source.Vertices[i]));
+			}
+			transformed.MergeFromVertices.AddRange(source.MergeFromVertices);
+			transformed.MergeToVertices.AddRange(source.MergeToVertices);
+
+			bool mirrored = GetLinearDeterminant(transform) < 0f;
+			for (int subMesh = 0; subMesh < source.SubMeshTriangles.Count; subMesh++)
+			{
+				List<int> sourceTriangles = source.SubMeshTriangles[subMesh];
+				if (subMesh >= transformed.SubMeshTriangles.Count)
+				{
+					transformed.SubMeshTriangles.Add(new List<int>(sourceTriangles.Count));
+				}
+
+				List<int> targetTriangles = transformed.SubMeshTriangles[subMesh];
+				if (!mirrored)
+				{
+					targetTriangles.AddRange(sourceTriangles);
+					continue;
+				}
+
+				for (int i = 0; i + 2 < sourceTriangles.Count; i += 3)
+				{
+					targetTriangles.Add(sourceTriangles[i]);
+					targetTriangles.Add(sourceTriangles[i + 2]);
+					targetTriangles.Add(sourceTriangles[i + 1]);
+				}
+			}
+
+			transformed.RecalculateNormals();
+			return transformed;
+		}
+
+		private static float GetLinearDeterminant(Matrix4x4 matrix)
+		{
+			Vector3 x = matrix.GetColumn(0);
+			Vector3 y = matrix.GetColumn(1);
+			Vector3 z = matrix.GetColumn(2);
+			return Vector3.Dot(x, Vector3.Cross(y, z));
 		}
 
 		private static PreviewMeshData BuildCutVolume(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, string meshName)

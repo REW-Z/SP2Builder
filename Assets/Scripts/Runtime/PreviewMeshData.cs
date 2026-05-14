@@ -13,6 +13,10 @@ public sealed class PreviewMeshData
 
 	public readonly List<List<int>> SubMeshTriangles = new List<List<int>>();
 
+	public readonly List<int> MergeFromVertices = new List<int>();
+
+	public readonly List<int> MergeToVertices = new List<int>();
+
 	public PreviewMeshData(string name = "PreviewMesh")
 	{
 		Name = name;

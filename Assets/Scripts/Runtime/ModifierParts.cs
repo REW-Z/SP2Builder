@@ -12,7 +12,7 @@ internal static class FuselageCarverUtility
 {
 	private const float Epsilon = 0.0001f;
 
-	private const int CornerSamples = 10;
+	private const int InflateVertsPerTurn = 20;
 
 	public static Mesh BuildWireframeMesh(IReadOnlyList<Vector2> outline, float depth, string meshName)
 	{
@@ -85,7 +85,7 @@ internal static class FuselageCarverUtility
 		polygon.Add(new Vector2(lowerSpan.x, -halfHeight));
 		polygon.Add(new Vector2(upperSpan.x, halfHeight));
 		RemoveNearDuplicateLoopPoints(polygon);
-		return BuildRoundedConvexOutline(polygon, cornerRadius, CornerSamples);
+		return BuildRoundedConvexOutline(polygon, cornerRadius);
 	}
 
 	// 按原版 simple bay 语义构建圆角矩形轮廓。 / Build the rounded rectangle outline for a simple bay using the original semantics.
@@ -116,30 +116,57 @@ internal static class FuselageCarverUtility
 
 		float halfDepth = Mathf.Max(0.01f, depth) * 0.5f;
 		Vector2 centroid2D = ComputePolygonCentroid(loop);
-		List<Vector3> vertices = new List<Vector3>(loop.Count * 2);
+		List<Vector3> vertices = new List<Vector3>(loop.Count * 4);
 		List<int> triangles = new List<int>((loop.Count - 2) * 6 + loop.Count * 6);
+		int[] backCapIndices = new int[loop.Count];
+		int[] backSideIndices = new int[loop.Count];
+		int[] frontSideIndices = new int[loop.Count];
+		int[] frontCapIndices = new int[loop.Count];
 		for (int i = 0; i < loop.Count; i++)
 		{
-			vertices.Add(new Vector3(loop[i].x, loop[i].y, -halfDepth));
-		}
-		for (int i = 0; i < loop.Count; i++)
-		{
-			vertices.Add(new Vector3(loop[i].x, loop[i].y, halfDepth));
+			Vector2 point = loop[i];
+			Vector2 radial = point - centroid2D;
+			if (radial.sqrMagnitude <= Epsilon * Epsilon)
+			{
+				Vector2 previous = loop[(i - 1 + loop.Count) % loop.Count];
+				Vector2 next = loop[(i + 1) % loop.Count];
+				radial = Rotate((next - previous).normalized);
+			}
+			Vector3 sideNormal = new Vector3(radial.x, radial.y, 0f).normalized;
+
+			backCapIndices[i] = vertices.Count;
+			vertices.Add(new Vector3(point.x, point.y, -halfDepth));
+			backSideIndices[i] = vertices.Count;
+			vertices.Add(new Vector3(point.x, point.y, -halfDepth));
+			frontSideIndices[i] = vertices.Count;
+			vertices.Add(new Vector3(point.x, point.y, halfDepth));
+			frontCapIndices[i] = vertices.Count;
+			vertices.Add(new Vector3(point.x, point.y, halfDepth));
+
+			data.MergeFromVertices.Add(backCapIndices[i]);
+			data.MergeToVertices.Add(backSideIndices[i]);
+			data.MergeFromVertices.Add(frontCapIndices[i]);
+			data.MergeToVertices.Add(frontSideIndices[i]);
+
+			data.Normals.Add(Vector3.back);
+			data.Normals.Add(sideNormal.sqrMagnitude > Epsilon * Epsilon ? sideNormal : Vector3.right);
+			data.Normals.Add(sideNormal.sqrMagnitude > Epsilon * Epsilon ? sideNormal : Vector3.right);
+			data.Normals.Add(Vector3.forward);
 		}
 
 		for (int i = 1; i < loop.Count - 1; i++)
 		{
-			AddOrientedMeshTriangle(triangles, vertices, 0, i + 1, i, Vector3.back);
-			AddOrientedMeshTriangle(triangles, vertices, loop.Count, loop.Count + i, loop.Count + i + 1, Vector3.forward);
+			AddOrientedMeshTriangle(triangles, vertices, backCapIndices[0], backCapIndices[i + 1], backCapIndices[i], Vector3.back);
+			AddOrientedMeshTriangle(triangles, vertices, frontCapIndices[0], frontCapIndices[i], frontCapIndices[i + 1], Vector3.forward);
 		}
 
 		for (int i = 0; i < loop.Count; i++)
 		{
 			int next = (i + 1) % loop.Count;
-			int backA = i;
-			int backB = next;
-			int frontA = loop.Count + i;
-			int frontB = loop.Count + next;
+			int backA = backSideIndices[i];
+			int backB = backSideIndices[next];
+			int frontA = frontSideIndices[i];
+			int frontB = frontSideIndices[next];
 			Vector3 expectedNormal = new Vector3(
 				((loop[i].x + loop[next].x) * 0.5f) - centroid2D.x,
 				((loop[i].y + loop[next].y) * 0.5f) - centroid2D.y,
@@ -155,11 +182,10 @@ internal static class FuselageCarverUtility
 
 		data.Vertices.AddRange(vertices);
 		data.SubMeshTriangles[0].AddRange(triangles);
-		data.RecalculateNormals();
 		return data;
 	}
 
-	private static List<Vector2> BuildRoundedConvexOutline(List<Vector2> polygon, float cornerRadius, int cornerSamples)
+	private static List<Vector2> BuildRoundedConvexOutline(List<Vector2> polygon, float cornerRadius)
 	{
 		polygon = EnsureClockwise(polygon);
 		RemoveNearDuplicateLoopPoints(polygon);
@@ -174,46 +200,209 @@ internal static class FuselageCarverUtility
 			return polygon;
 		}
 
-		return BuildRoundedPolygon(polygon, requestedRadius, Mathf.Max(2, cornerSamples));
+		List<Vector2> insetPolygon = new List<Vector2>(polygon);
+		float actualInset = InsetConvexLoop(insetPolygon, requestedRadius, 0f);
+		if (actualInset <= Epsilon || insetPolygon.Count < 3)
+		{
+			return polygon;
+		}
+
+		List<Vector2> rounded = InflateConvexLoop(insetPolygon, actualInset, InflateVertsPerTurn);
+		CollapseTinyEdges(rounded, Mathf.Max(actualInset * 0.2f, ComputeLoopMaxExtent(polygon) * 0.0025f));
+		RemoveNearDuplicateLoopPoints(rounded);
+		return rounded.Count >= 3 ? EnsureClockwise(rounded) : polygon;
 	}
 
-	private static List<Vector2> BuildRoundedPolygon(List<Vector2> polygon, float requestedRadius, int cornerSamples)
+	private static float InsetConvexLoop(List<Vector2> points, float insetBy, float minSize)
 	{
-		polygon = EnsureClockwise(polygon);
-		List<Vector2> points = new List<Vector2>(polygon.Count * cornerSamples);
-		for (int i = 0; i < polygon.Count; i++)
+		if (points == null || points.Count < 3 || insetBy <= Epsilon)
 		{
-			Vector2 previous = polygon[(i - 1 + polygon.Count) % polygon.Count];
-			Vector2 current = polygon[i];
-			Vector2 next = polygon[(i + 1) % polygon.Count];
-			Vector2 dirPrev = (previous - current).normalized;
-			Vector2 dirNext = (next - current).normalized;
-			float angle = Mathf.Acos(Mathf.Clamp(Vector2.Dot(dirPrev, dirNext), -0.9999f, 0.9999f));
-			float limit = 0.5f * Mathf.Min(Vector2.Distance(previous, current), Vector2.Distance(current, next)) * Mathf.Tan(angle * 0.5f);
-			float radius = Mathf.Min(requestedRadius, limit);
-			if (radius <= Epsilon)
+			return 0f;
+		}
+
+		float remaining = insetBy;
+		const int maxIterations = 64;
+		for (int iteration = 0; iteration < maxIterations && remaining > Epsilon && points.Count >= 3; iteration++)
+		{
+			RemoveNearDuplicateLoopPoints(points);
+			if (points.Count < 3)
 			{
-				AddUnique(points, current);
+				break;
+			}
+
+			int count = points.Count;
+			float[] shrinkage = new float[count];
+			Vector2[] velocity = new Vector2[count];
+			for (int i = 0; i < count; i++)
+			{
+				Vector2 current = points[i];
+				Vector2 previous = points[(i - 1 + count) % count];
+				Vector2 next = points[(i + 1) % count];
+				Vector2 inVec = current - previous;
+				Vector2 outVec = next - current;
+				if (inVec.sqrMagnitude <= Epsilon * Epsilon || outVec.sqrMagnitude <= Epsilon * Epsilon)
+				{
+					shrinkage[i] = 0f;
+					velocity[i] = Vector2.zero;
+					continue;
+				}
+
+				shrinkage[i] = ComputePointShrinkage(inVec, outVec);
+				velocity[i] = ComputePointVelocity(shrinkage[i], inVec);
+			}
+
+			float step = remaining;
+			float maxEdgeLimit = 0f;
+			List<int> edgesToMerge = new List<int>();
+			for (int i = 0; i < count; i++)
+			{
+				int next = (i + 1) % count;
+				float shrink = shrinkage[i] + shrinkage[next];
+				if (shrink <= Epsilon)
+				{
+					continue;
+				}
+
+				float edgeLimit = Vector2.Distance(points[i], points[next]) / shrink;
+				maxEdgeLimit = Mathf.Max(maxEdgeLimit, edgeLimit);
+				if (edgeLimit <= Epsilon)
+				{
+					step = 0f;
+					edgesToMerge.Add(i);
+					continue;
+				}
+
+				if (step + Epsilon >= edgeLimit)
+				{
+					if (edgeLimit < step - 0.00001f)
+					{
+						edgesToMerge.Clear();
+					}
+					step = Mathf.Min(step, edgeLimit);
+					edgesToMerge.Add(i);
+				}
+			}
+
+			if (minSize > Epsilon && maxEdgeLimit > Epsilon)
+			{
+				float minSizeStep = maxEdgeLimit - minSize;
+				if (minSizeStep <= Epsilon)
+				{
+					break;
+				}
+
+				if (step > minSizeStep - Epsilon)
+				{
+					step = minSizeStep;
+					edgesToMerge.Clear();
+				}
+			}
+
+			if (step > Epsilon)
+			{
+				for (int i = 0; i < count; i++)
+				{
+					points[i] += velocity[i] * step;
+				}
+			}
+
+			remaining -= step;
+			if (edgesToMerge.Count > 0)
+			{
+				MergeEdges(points, edgesToMerge);
+			}
+
+			if (step <= Epsilon && edgesToMerge.Count == 0)
+			{
+				break;
+			}
+		}
+
+		RemoveNearDuplicateLoopPoints(points);
+		return insetBy - Mathf.Max(0f, remaining);
+	}
+
+	private static List<Vector2> InflateConvexLoop(List<Vector2> points, float radius, int vertsPerTurn)
+	{
+		List<Vector2> result = new List<Vector2>(Mathf.Max(points.Count * 4, 8));
+		if (points == null || points.Count == 0 || radius <= Epsilon)
+		{
+			return result;
+		}
+
+		float maxExtent = ComputeLoopMaxExtent(points);
+
+		Vector2 previous = points[^1];
+		for (int i = 0; i < points.Count; i++)
+		{
+			Vector2 current = points[i];
+			Vector2 next = points[(i + 1) % points.Count];
+			Vector2 inDir = (current - previous).normalized;
+			Vector2 outDir = (next - current).normalized;
+			if (inDir.sqrMagnitude <= Epsilon * Epsilon || outDir.sqrMagnitude <= Epsilon * Epsilon)
+			{
+				previous = current;
 				continue;
 			}
 
-			float tangentDistance = radius / Mathf.Tan(angle * 0.5f);
-			Vector2 start = current + dirPrev * tangentDistance;
-			Vector2 end = current + dirNext * tangentDistance;
-			Vector2 bisector = (dirPrev + dirNext).normalized;
-			float centerDistance = radius / Mathf.Sin(angle * 0.5f);
-			Vector2 center = current + bisector * centerDistance;
-			float startAngle = Mathf.Atan2(start.y - center.y, start.x - center.x);
-			float endAngle = Mathf.Atan2(end.y - center.y, end.x - center.x);
-			for (int sample = 0; sample < cornerSamples; sample++)
+			Vector2 startNormal = RotateCounterClockwise(inDir);
+			Vector2 endNormal = RotateCounterClockwise(outDir);
+			float startAngle = Mathf.Atan2(startNormal.y, startNormal.x);
+			float endAngle = Mathf.Atan2(endNormal.y, endNormal.x);
+			float delta = Mathf.DeltaAngle(startAngle * Mathf.Rad2Deg, endAngle * Mathf.Rad2Deg) * Mathf.Deg2Rad;
+			if (delta > 0f)
 			{
-				float t = sample / (float)(cornerSamples - 1);
-				float angleSample = Mathf.LerpAngle(startAngle * Mathf.Rad2Deg, endAngle * Mathf.Rad2Deg, t) * Mathf.Deg2Rad;
-				AddUnique(points, center + new Vector2(Mathf.Cos(angleSample), Mathf.Sin(angleSample)) * radius);
+				delta -= Mathf.PI * 2f;
+			}
+
+			int angleSampleCount = Mathf.Max(2, Mathf.RoundToInt(vertsPerTurn * Mathf.Abs(delta) / (Mathf.PI * 2f)));
+			int radiusSampleCount = Mathf.Max(2, Mathf.CeilToInt(radius / Mathf.Max(maxExtent * 0.05f, Epsilon)) + 1);
+			int sampleCount = Mathf.Min(angleSampleCount, radiusSampleCount);
+			for (int sample = 0; sample < sampleCount; sample++)
+			{
+				float t = sampleCount <= 1 ? 0f : sample / (float)(sampleCount - 1);
+				float angle = startAngle + delta * t;
+				AddUnique(result, current + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius);
+			}
+
+			previous = current;
+		}
+
+		if (result.Count == 0)
+		{
+			float step = Mathf.PI * -2f / Mathf.Max(1, vertsPerTurn - 1);
+			for (int i = 0; i < vertsPerTurn; i++)
+			{
+				float angle = i * step;
+				AddUnique(result, points[0] + new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * radius);
 			}
 		}
-		RemoveNearDuplicateLoopPoints(points);
-		return EnsureClockwise(points);
+
+		RemoveNearDuplicateLoopPoints(result);
+		return result;
+	}
+
+	private static float ComputeLoopMaxExtent(IReadOnlyList<Vector2> points)
+	{
+		if (points == null || points.Count == 0)
+		{
+			return 0f;
+		}
+
+		float minX = float.PositiveInfinity;
+		float minY = float.PositiveInfinity;
+		float maxX = float.NegativeInfinity;
+		float maxY = float.NegativeInfinity;
+		for (int i = 0; i < points.Count; i++)
+		{
+			Vector2 point = points[i];
+			minX = Mathf.Min(minX, point.x);
+			minY = Mathf.Min(minY, point.y);
+			maxX = Mathf.Max(maxX, point.x);
+			maxY = Mathf.Max(maxY, point.y);
+		}
+
+		return Mathf.Max(maxX - minX, maxY - minY);
 	}
 
 	private static float EstimateMaxInset(IReadOnlyList<Vector2> points)
@@ -259,9 +448,20 @@ internal static class FuselageCarverUtility
 		return 0f;
 	}
 
+	private static Vector2 ComputePointVelocity(float pointShrinkage, Vector2 inVec)
+	{
+		Vector2 inDir = inVec.normalized;
+		return Rotate(inDir) - inDir * pointShrinkage;
+	}
+
 	private static Vector2 Rotate(Vector2 value)
 	{
 		return new Vector2(value.y, -value.x);
+	}
+
+	private static Vector2 RotateCounterClockwise(Vector2 value)
+	{
+		return new Vector2(-value.y, value.x);
 	}
 
 	private static void AddOrientedMeshTriangle(List<int> triangles, List<Vector3> vertices, int a, int b, int c, Vector3 expectedNormal)
@@ -338,6 +538,61 @@ internal static class FuselageCarverUtility
 				points.RemoveAt(i);
 			}
 		}
+	}
+
+	private static void CollapseTinyEdges(List<Vector2> points, float minEdgeLength)
+	{
+		if (points == null || points.Count < 4 || minEdgeLength <= Epsilon)
+		{
+			return;
+		}
+
+		for (int iteration = 0; iteration < 64 && points.Count > 3; iteration++)
+		{
+			int removeIndex = -1;
+			float shortestEdge = float.PositiveInfinity;
+			for (int i = 0; i < points.Count; i++)
+			{
+				int next = (i + 1) % points.Count;
+				float edgeLength = Vector2.Distance(points[i], points[next]);
+				if (edgeLength < shortestEdge)
+				{
+					shortestEdge = edgeLength;
+					removeIndex = next;
+				}
+			}
+
+			if (shortestEdge >= minEdgeLength || removeIndex < 0)
+			{
+				break;
+			}
+
+			points.RemoveAt(removeIndex);
+		}
+	}
+
+	private static void MergeEdges(List<Vector2> points, List<int> edgesToMerge)
+	{
+		if (points == null || points.Count < 3 || edgesToMerge == null || edgesToMerge.Count == 0)
+		{
+			return;
+		}
+
+		HashSet<int> removeIndices = new HashSet<int>();
+		int count = points.Count;
+		for (int i = 0; i < edgesToMerge.Count; i++)
+		{
+			removeIndices.Add((edgesToMerge[i] + 1) % count);
+		}
+
+		List<int> sortedIndices = new List<int>(removeIndices);
+		sortedIndices.Sort((a, b) => b.CompareTo(a));
+		for (int i = 0; i < sortedIndices.Count && points.Count >= 3; i++)
+		{
+			points.RemoveAt(sortedIndices[i]);
+		}
+
+		RemoveNearDuplicateLoopPoints(points);
 	}
 
 	private static void AddUnique(List<Vector2> points, Vector2 point)

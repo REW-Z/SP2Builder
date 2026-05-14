@@ -30,17 +30,36 @@ namespace SP2Builder.ManifoldRuntime
 
 			uint[] runOriginalIds = { 0u };
 			uint[] runIndices = { 0u, (uint)(triangles.Length / 3) };
+			uint[] mergeFrom = null;
+			uint[] mergeTo = null;
+			if (meshData.MergeFromVertices.Count > 0 && meshData.MergeFromVertices.Count == meshData.MergeToVertices.Count)
+			{
+				mergeFrom = new uint[meshData.MergeFromVertices.Count];
+				mergeTo = new uint[meshData.MergeToVertices.Count];
+				for (int i = 0; i < mergeFrom.Length; i++)
+				{
+					mergeFrom[i] = (uint)Math.Max(0, meshData.MergeFromVertices[i]);
+					mergeTo[i] = (uint)Math.Max(0, meshData.MergeToVertices[i]);
+				}
+			}
 			IntPtr storage = Marshal.AllocHGlobal((int)ManifoldNativeMethods.manifold_meshgl_size());
 			GCHandle vertexHandle = default;
 			GCHandle triangleHandle = default;
 			GCHandle originalIdHandle = default;
 			GCHandle runIndexHandle = default;
+			GCHandle mergeFromHandle = default;
+			GCHandle mergeToHandle = default;
 			try
 			{
 				vertexHandle = GCHandle.Alloc(vertices, GCHandleType.Pinned);
 				triangleHandle = GCHandle.Alloc(triangles, GCHandleType.Pinned);
 				originalIdHandle = GCHandle.Alloc(runOriginalIds, GCHandleType.Pinned);
 				runIndexHandle = GCHandle.Alloc(runIndices, GCHandleType.Pinned);
+				if (mergeFrom != null)
+				{
+					mergeFromHandle = GCHandle.Alloc(mergeFrom, GCHandleType.Pinned);
+					mergeToHandle = GCHandle.Alloc(mergeTo, GCHandleType.Pinned);
+				}
 
 				MeshGLOptions options = new MeshGLOptions
 				{
@@ -48,9 +67,9 @@ namespace SP2Builder.ManifoldRuntime
 					run_original_ids_length = (UIntPtr)runOriginalIds.Length,
 					run_indices = runIndexHandle.AddrOfPinnedObject(),
 					run_indices_length = (UIntPtr)runIndices.Length,
-					merge_from_vert = IntPtr.Zero,
-					merge_to_vert = IntPtr.Zero,
-					merge_verts_length = UIntPtr.Zero,
+					merge_from_vert = mergeFromHandle.IsAllocated ? mergeFromHandle.AddrOfPinnedObject() : IntPtr.Zero,
+					merge_to_vert = mergeToHandle.IsAllocated ? mergeToHandle.AddrOfPinnedObject() : IntPtr.Zero,
+					merge_verts_length = mergeFromHandle.IsAllocated ? (UIntPtr)mergeFrom.Length : UIntPtr.Zero,
 					halfedge_tangents = IntPtr.Zero
 				};
 
@@ -118,6 +137,14 @@ namespace SP2Builder.ManifoldRuntime
 			}
 			finally
 			{
+				if (mergeToHandle.IsAllocated)
+				{
+					mergeToHandle.Free();
+				}
+				if (mergeFromHandle.IsAllocated)
+				{
+					mergeFromHandle.Free();
+				}
 				if (runIndexHandle.IsAllocated)
 				{
 					runIndexHandle.Free();

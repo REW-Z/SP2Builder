@@ -7,8 +7,6 @@ using UnityEngine;
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class BayPart : Part, IFuselageCarver
 {
-    private const float WindowEquivalentCutDepth = 0.3f;
-
     [SerializeField, TextArea(2, 8)]
     private string _rawStateXml;
 
@@ -97,6 +95,6 @@ public class BayPart : Part, IFuselageCarver
 
     private float GetCutDepth()
     {
-        return Mathf.Min(Mathf.Max(0.01f, _depth), WindowEquivalentCutDepth);
+		return Mathf.Max(0.01f, _depth);
     }
 }
