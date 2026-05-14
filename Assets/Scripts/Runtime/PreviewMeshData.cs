@@ -41,6 +41,7 @@ public sealed class PreviewMeshData
 		SubMeshTriangles[0].AddRange(triangles);
 	}
 
+	// 创建一个新的 Unity Mesh，并把当前预览数据复制进去。 / Create a new Unity Mesh and copy the current preview data into it.
 	public Mesh ToMesh()
 	{
 		Mesh mesh = new Mesh();
@@ -48,6 +49,7 @@ public sealed class PreviewMeshData
 		return mesh;
 	}
 
+	// 把当前预览顶点、法线和 submesh 三角形写进目标 Unity Mesh。 / Copy the current preview vertices, normals, and submesh triangles into the target Unity Mesh.
 	public void CopyToMesh(Mesh mesh)
 	{
 		if (mesh == null)
@@ -80,6 +82,7 @@ public sealed class PreviewMeshData
 		mesh.RecalculateBounds();
 	}
 
+	// 根据当前三角形数据重新累计并归一化顶点法线。 / Rebuild vertex normals by accumulating and normalizing the current triangle data.
 	public void RecalculateNormals()
 	{
 		Normals.Clear();

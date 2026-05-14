@@ -146,6 +146,7 @@ public class Craft : MonoBehaviour
 		QueuePreviewRebuild();
 	}
 
+	// 当 Craft 被禁用时，从共享编辑器 update 循环中移除自己。 / Remove this craft from the shared editor update loop when it is disabled.
 	private void OnDisable()
 	{
 		UnregisterFromEditorUpdate();
@@ -234,6 +235,7 @@ public class Craft : MonoBehaviour
 		QueuePreviewRebuild(0d, lightweight);
 	}
 
+	// 按 PartId 查找零件，必要时延迟重建查找索引。 / Find a part by PartId, rebuilding the lookup index lazily when needed.
 	public Part FindPartById(int partId)
 	{
 		if (partId <= 0)
@@ -256,6 +258,7 @@ public class Craft : MonoBehaviour
 		return _partById.TryGetValue(partId, out part) ? part : null;
 	}
 
+	// 从一个 Part XML 节点创建对应的预览对象并挂载正确组件。 / Create the preview object and attach the correct component for a part XML node.
 	public Part CreatePartFromXml(XElement partElement, int orderIndex, bool lockScenePicking = false)
 	{
 		if (partElement == null)
@@ -282,6 +285,7 @@ public class Craft : MonoBehaviour
 		return part;
 	}
 
+	// 在 Inspector 改动 Craft 级数据后清理材质缓存并整体重建预览。 / Clear material caches and rebuild all previews after craft-level inspector edits.
 	public void HandleInspectorDataChanged()
 	{
 		PreviewMaterialFactory.ClearThemedMaterialCache();
@@ -289,6 +293,7 @@ public class Craft : MonoBehaviour
 		SceneView.RepaintAll();
 	}
 
+	// 通过 XML 往返复制一个零件，并为副本分配新 id 和轻微偏移。 / Clone a part by round-tripping through XML, then assign a new id and slight offset.
 	public Part ClonePart(Part source)
 	{
 		if (source == null)
@@ -305,6 +310,7 @@ public class Craft : MonoBehaviour
 		return clone;
 	}
 
+	// 按可见材质槽索引解析一个 Theme 材质。 / Resolve one theme material by the visible material-slot index.
 	public bool TryGetThemeMaterial(int materialId, out CraftThemeMaterial material)
 	{
 		material = default;
@@ -350,6 +356,7 @@ public class Craft : MonoBehaviour
 		return false;
 	}
 
+	// 计算当前 Craft 中下一个可用的连接 id。 / Compute the next available connection id inside the current craft.
 	public int AllocateConnectionId()
 	{
 		int maxId = 0;
@@ -363,6 +370,7 @@ public class Craft : MonoBehaviour
 		return maxId + 1;
 	}
 
+	// 计算当前 Craft 中下一个可用的零件 id。 / Compute the next available part id inside the current craft.
 	public int AllocatePartId()
 	{
 		int maxId = 0;
@@ -373,6 +381,7 @@ public class Craft : MonoBehaviour
 		return maxId + 1;
 	}
 
+	// 计算导出顺序使用的下一个 orderIndex。 / Compute the next orderIndex used for export ordering.
 	public int AllocateOrderIndex()
 	{
 		int maxOrder = -1;
@@ -383,6 +392,7 @@ public class Craft : MonoBehaviour
 		return maxOrder + 1;
 	}
 
+	// 把一个零件的连接端点同步成整个 Craft 中的双向连接图。 / Synchronize one part's endpoints into the craft-wide reciprocal connection graph.
 	public void SynchronizeConnectionsFrom(Part source)
 	{
 		if (source == null)
@@ -426,11 +436,13 @@ public class Craft : MonoBehaviour
 		QueuePreviewRebuild(delaySeconds, lightweight: true);
 	}
 
+	// 以指定延迟和质量模式排队整机预览重建。 / Queue a full-craft preview rebuild with the requested delay and quality mode.
 	public void QueuePreviewRebuild(double delaySeconds, bool lightweight)
 	{
 		QueuePreviewRebuildInternal(delaySeconds, fullRebuild: true, lightweight);
 	}
 
+	// 为一个零件及其受影响邻居排队预览重建。 / Queue a preview rebuild for one part and any impacted neighbors.
 	public void QueuePreviewRebuildForPart(Part changedPart, double delaySeconds = 0.12d, bool lightweight = true)
 	{
 		if (changedPart == null)
@@ -443,6 +455,7 @@ public class Craft : MonoBehaviour
 		QueueImpactedPreviewParts(changedPart);
 	}
 
+	// 立即启动与某个零件相关的预览重建，必要时中断当前增量队列。 / Start an immediate preview rebuild for one part, canceling the current incremental queue if needed.
 	public void RebuildPreviewForPart(Part changedPart, bool lightweight = true)
 	{
 		if (changedPart == null)
@@ -468,14 +481,15 @@ public class Craft : MonoBehaviour
 		BeginQueuedPreviewRebuild();
 	}
 
+	// 记录下一次延迟重建的范围、质量和触发时间。 / Record the scope, quality, and due time for the next delayed preview rebuild.
 	private void QueuePreviewRebuildInternal(double delaySeconds, bool fullRebuild, bool lightweight)
 	{
-		if (_suppressPreviewQueue || _isRebuildingPreviews)
+		if (_suppressPreviewQueue)
 		{
 			return;
 		}
 
-		if (_incrementalPreviewRebuildActive)
+		if (_incrementalPreviewRebuildActive && !_isRebuildingPreviews)
 		{
 			CancelActivePreviewRebuild();
 		}
@@ -500,6 +514,7 @@ public class Craft : MonoBehaviour
 		SetDelayedRebuildPending(true);
 	}
 
+	// 把连接零件或显式目标机身一并加入待重建集合。 / Add connected parts or explicitly targeted fuselages to the queued rebuild set.
 	private void QueueImpactedPreviewParts(Part changedPart)
 	{
 		if (_queuedFullPreviewRebuild || changedPart == null)
@@ -533,6 +548,7 @@ public class Craft : MonoBehaviour
 		}
 	}
 
+	// 把一个零件实例 id 记入当前排队请求。 / Record one part instance id in the current queued request.
 	private void AddQueuedPreviewPart(Part part)
 	{
 		if (part != null)
@@ -560,6 +576,7 @@ public class Craft : MonoBehaviour
 		EditorApplication.delayCall += RunQueuedPreviewRebuild;
 	}
 
+	// 在 delayCall 回调里真正切入分帧预览重建。 / Enter the incremental preview rebuild from the editor delay-call callback.
 	private void RunQueuedPreviewRebuild()
 	{
 		EditorApplication.delayCall -= RunQueuedPreviewRebuild;
@@ -580,15 +597,20 @@ public class Craft : MonoBehaviour
 		BeginQueuedPreviewRebuild();
 	}
 
+	// 消费当前排队请求，并冻结成一轮活动的分帧重建状态。 / Consume the queued request and freeze it into one active incremental rebuild pass.
 	private void BeginQueuedPreviewRebuild()
 	{
-		_activePreviewRebuildParts = GetQueuedPreviewParts();
+		Part[] queuedParts = GetQueuedPreviewParts();
+		bool activeLightweight = !_queuedPreviewRequiresFullQuality;
+		ResetQueuedPreviewRequest();
+		_activePreviewRebuildParts = queuedParts;
 		ResetActivePreviewProgress();
-		_activePreviewRebuildLightweight = !_queuedPreviewRequiresFullQuality;
+		_activePreviewRebuildLightweight = activeLightweight;
 		_incrementalPreviewRebuildActive = true;
      SetContinueQueuedPreviewRebuildPending(true);
 	}
 
+	// 在共享 editor update 里按预算推进当前分帧预览重建。 / Advance the active incremental preview rebuild within the shared editor update budget.
 	private void ContinueQueuedPreviewRebuild()
 	{
 		try
@@ -690,6 +712,7 @@ public class Craft : MonoBehaviour
 		}
 	}
 
+	// 把接缝平滑延迟到重建结束后的下一次编辑器回调。 / Delay seam smoothing until the next editor callback after the rebuild completes.
 	private void QueuePostRebuildSmoothing()
 	{
 		if (_postRebuildSmoothingQueued)
@@ -702,6 +725,7 @@ public class Craft : MonoBehaviour
 		EditorApplication.delayCall += ApplyPostRebuildSmoothing;
 	}
 
+	// 执行重建后的机身接缝平滑，并刷新场景视图。 / Apply post-rebuild fuselage seam smoothing and repaint the scene.
 	private void ApplyPostRebuildSmoothing()
 	{
 		EditorApplication.delayCall -= ApplyPostRebuildSmoothing;
@@ -716,9 +740,9 @@ public class Craft : MonoBehaviour
 		SceneView.RepaintAll();
 	}
 
+	// 结束当前活动重建，并按需刷新场景。 / Finish the current active rebuild and repaint if requested.
 	private void FinishQueuedPreviewRebuild(bool repaint)
 	{
-      ResetQueuedPreviewRequest();
 		ResetActivePreviewState();
 		if (repaint)
 		{
@@ -726,6 +750,7 @@ public class Craft : MonoBehaviour
 		}
 	}
 
+	// 一次性清空排队状态、活动状态和挂起的延迟回调。 / Clear queued state, active state, and all pending delayed callbacks in one place.
 	private void ResetPreviewRebuildState()
 	{
       ResetQueuedPreviewRequest();
@@ -735,6 +760,7 @@ public class Craft : MonoBehaviour
 		_postRebuildSmoothingQueued = false;
 	}
 
+	// 根据当前排队模式返回全量或局部受影响的零件集合。 / Return either all parts or just the impacted subset for the queued rebuild.
 	private Part[] GetQueuedPreviewParts()
 	{
 		Part[] parts = GetComponentsInChildren<Part>(includeInactive: true);
@@ -748,6 +774,7 @@ public class Craft : MonoBehaviour
 			.ToArray();
 	}
 
+	// 取消当前正在进行的分帧重建。 / Cancel the currently active incremental rebuild pass.
 	private void CancelActivePreviewRebuild()
 	{
       ResetActivePreviewState();
@@ -898,6 +925,7 @@ public class Craft : MonoBehaviour
 		}
 	}
 
+	// 从 Assembly/Connections XML 中重建零件间的双向连接关系。 / Rebuild reciprocal part connections from the Assembly/Connections XML.
 	private void ImportConnections(XElement connectionsElement)
 	{
 		_hasConnectionData = false;
@@ -950,6 +978,7 @@ public class Craft : MonoBehaviour
 		}
 	}
 
+	// 根据当前所有端点重新计算是否存在连接数据。 / Recompute whether the craft currently contains any connection data.
 	private void RefreshConnectionDataFlag()
 	{
 		_hasConnectionData = false;
@@ -965,6 +994,7 @@ public class Craft : MonoBehaviour
 		}
 	}
 
+	// 重建 PartId 到 Part 实例的查找索引。 / Rebuild the lookup index from PartId to Part instance.
 	private void RebuildPartIndex()
 	{
 		_partById.Clear();
@@ -985,6 +1015,7 @@ public class Craft : MonoBehaviour
 		_partIndexDirty = false;
 	}
 
+	// 返回导出时应写出的直属零件，并按顺序排序。 / Return the direct child parts that should be exported, sorted by order.
 	private IEnumerable<Part> GetExportParts()
 	{
 		return GetComponentsInChildren<Part>(includeInactive: true)
@@ -992,6 +1023,7 @@ public class Craft : MonoBehaviour
 			.OrderBy(part => part.OrderIndex);
 	}
 
+	// 确保即将导入或创建的 PartId 在当前 Craft 中唯一有效。 / Ensure an imported or created PartId is valid and unique inside the current craft.
 	private void ValidatePartIdAvailable(int partId, Part ignoredPart)
 	{
 		if (partId <= 0)
@@ -1013,6 +1045,7 @@ public class Craft : MonoBehaviour
 		}
 	}
 
+	// 把当前连接图写回导出的 Assembly/Connections 节点。 / Write the current connection graph back into the exported Assembly/Connections node.
 	private void WriteConnections(XElement assemblyElement)
 	{
 		XmlUtil.RemoveChildren(assemblyElement, "Connections");
@@ -1035,6 +1068,7 @@ public class Craft : MonoBehaviour
 		assemblyElement.Add(connectionsElement);
 	}
 
+	// 从双向端点集合归并出导出用的唯一连接记录。 / Collapse reciprocal endpoint data into unique export connection records.
 	private List<ExportConnection> CollectExportConnections()
 	{
 		Dictionary<int, ExportConnection> byId = new Dictionary<int, ExportConnection>();
@@ -1085,6 +1119,7 @@ public class Craft : MonoBehaviour
 			.ToList();
 	}
 
+	// 判断一个连接 id 是否已经存在主端点。 / Check whether a connection id already has a primary endpoint.
 	private static bool HasPrimaryEndpoint(IEnumerable<Part> parts, int connectionId)
 	{
 		if (connectionId <= 0)
@@ -1095,6 +1130,7 @@ public class Craft : MonoBehaviour
 		return parts.SelectMany(part => part.ConnectionEndpoints).Any(endpoint => endpoint.ConnectionId == connectionId && endpoint.IsPartAEndpoint);
 	}
 
+	// 解析连接 XML 中的 attach-point 列表。 / Parse an attach-point list from the connection XML.
 	private static int[] ParseAttachPointList(string csv)
 	{
 		if (string.IsNullOrWhiteSpace(csv))
@@ -1109,11 +1145,13 @@ public class Craft : MonoBehaviour
 			.ToArray();
 	}
 
+	// 把 attach-point 列表格式化为连接 XML 属性字符串。 / Format an attach-point list into the connection XML attribute format.
 	private static string FormatAttachPointList(IReadOnlyList<int> attachPoints)
 	{
 		return attachPoints == null || attachPoints.Count == 0 ? "0" : string.Join(",", attachPoints);
 	}
 
+	// 按导入选项启用或禁用零件在场景里的可拾取状态。 / Enable or disable scene picking for an imported part based on the import option.
 	private static void ApplyScenePickingLock(GameObject partObject, bool locked)
 	{
 		if (partObject == null)
@@ -1131,6 +1169,7 @@ public class Craft : MonoBehaviour
 		}
 	}
 
+	// 从 Theme XML 节点解析材质主题数组。 / Parse the material theme array from the Theme XML node.
 	private static CraftThemeMaterial[] ParseThemeMaterials(XElement themeElement)
 	{
 		if (themeElement == null)
@@ -1153,6 +1192,7 @@ public class Craft : MonoBehaviour
 			.ToArray();
 	}
 
+	// 把 Theme XML 里的十六进制颜色文本解析成 Unity Color。 / Parse a Theme XML hex color string into a Unity Color.
 	private static Color ParseThemeColor(string hex, Color fallback)
 	{
 		if (string.IsNullOrWhiteSpace(hex))
@@ -1195,6 +1235,7 @@ public class Craft : MonoBehaviour
 
 	private sealed class ExportConnection
 	{
+		// 创建一条导出连接记录并初始化双方 attach-point 列表。 / Create one export connection record and initialize both attach-point lists.
 		public ExportConnection(int connectionId, int partAId, int partBId)
 		{
 			ConnectionId = connectionId;

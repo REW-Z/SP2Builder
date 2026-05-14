@@ -31,10 +31,12 @@ public class PartConnectionEndpoint
 
 	public int ConnectedAttachPointId;
 
+	// 供 Unity 序列化反射使用的空构造函数。 / Parameterless constructor used by Unity serialization.
 	public PartConnectionEndpoint()
 	{
 	}
 
+	// 用一组显式端点值创建连接记录。 / Create a connection record from an explicit set of endpoint values.
 	public PartConnectionEndpoint(int connectionId, bool isPartAEndpoint, int localAttachPointId, int connectedPartId, int connectedAttachPointId)
 	{
 		ConnectionId = connectionId;
@@ -44,6 +46,7 @@ public class PartConnectionEndpoint
 		ConnectedAttachPointId = connectedAttachPointId;
 	}
 
+	// 生成对端零件视角下的 reciprocal 连接记录。 / Create the reciprocal connection record from the connected part's perspective.
 	public PartConnectionEndpoint CreateReciprocal(int sourcePartId)
 	{
 		return new PartConnectionEndpoint(ConnectionId, !IsPartAEndpoint, ConnectedAttachPointId, sourcePartId, LocalAttachPointId);
@@ -282,27 +285,32 @@ public abstract class Part : MonoBehaviour
 		return _targetPartIds != null && Array.IndexOf(_targetPartIds, partId) >= 0;
 	}
 
+	// 清空当前零件记录的所有连接端点。 / Clear all connection endpoints recorded on this part.
 	public void ClearConnectionEndpoints()
 	{
 		_connectionEndpoints.Clear();
 	}
 
+	// 追加一个连接端点记录。 / Append one connection endpoint record.
 	public void AddConnectionEndpoint(int connectionId, bool isPartAEndpoint, int localAttachPointId, int connectedPartId, int connectedAttachPointId)
 	{
 		_connectionEndpoints.Add(new PartConnectionEndpoint(connectionId, isPartAEndpoint, localAttachPointId, connectedPartId, connectedAttachPointId));
 	}
 
+	// 更新 materials 文本并重新解析材质 id 列表。 / Update the materials text and reparse the material id list.
 	public void SetMaterialsText(string materialsText)
 	{
 		_materialsText = materialsText ?? string.Empty;
 		_materialIds = ParseIntegerCsv(_materialsText);
 	}
 
+	// 标记状态 XML 在下次导出时需要重写。 / Mark the state XML as needing a rewrite on the next export.
 	public void MarkStateXmlDirty()
 	{
 		_stateXmlDirty = true;
 	}
 
+	// 按索引删除一个连接端点。 / Remove one connection endpoint by index.
 	public void RemoveConnectionEndpointAt(int index)
 	{
 		if (index < 0 || index >= _connectionEndpoints.Count)
@@ -313,6 +321,7 @@ public abstract class Part : MonoBehaviour
 		_connectionEndpoints.RemoveAt(index);
 	}
 
+	// 按端点里的 connectedPartId 解析出对端零件。 / Resolve the connected part referenced by an endpoint.
 	public bool TryGetConnectedPart(PartConnectionEndpoint endpoint, out Part connectedPart)
 	{
 		connectedPart = null;
@@ -326,6 +335,7 @@ public abstract class Part : MonoBehaviour
 		return connectedPart != null;
 	}
 
+	// 把某个端点的 reciprocal 视图插入或更新到当前零件。 / Insert or update the reciprocal view of an endpoint on this part.
 	public void UpsertReciprocalConnection(PartConnectionEndpoint sourceEndpoint, int sourcePartId)
 	{
 		if (sourceEndpoint == null)
@@ -352,6 +362,7 @@ public abstract class Part : MonoBehaviour
 		_connectionEndpoints.Add(reciprocal);
 	}
 
+	// 删除指向指定 source part 的过期 reciprocal 端点。 / Remove stale reciprocal endpoints that point back to the specified source part.
 	public void RemoveStaleReciprocalConnections(int connectedPartId, HashSet<int> activeConnectionIds)
 	{
 		for (int i = _connectionEndpoints.Count - 1; i >= 0; i--)
@@ -369,6 +380,7 @@ public abstract class Part : MonoBehaviour
 		}
 	}
 
+	// 为缺少 id 的端点分配连续且唯一的连接 id。 / Assign sequential unique connection ids to endpoints that do not have one yet.
 	public void EnsureConnectionIds(int firstAvailableId)
 	{
 		int nextId = Mathf.Max(1, firstAvailableId);
@@ -385,16 +397,19 @@ public abstract class Part : MonoBehaviour
 		}
 	}
 
+	// 让子类提供指定 attach point 的局部空间坐标。 / Let subclasses provide the local-space position for a given attach point.
 	public virtual Vector3 GetAttachPointLocalPosition(int attachPointId)
 	{
 		return Vector3.zero;
 	}
 
+	// 把 attach point 的局部坐标转换为世界坐标。 / Convert an attach point's local position into world space.
 	public Vector3 GetAttachPointWorldPosition(int attachPointId)
 	{
 		return transform.TransformPoint(GetAttachPointLocalPosition(attachPointId));
 	}
 
+	// 在零件被选中时绘制连接 Gizmos。 / Draw connection gizmos when the part is selected.
 	protected virtual void OnDrawGizmosSelected()
 	{
 		Event currentEvent = Event.current;
@@ -411,6 +426,7 @@ public abstract class Part : MonoBehaviour
 		DrawConnectionHandles();
 	}
 
+	// 在 SceneView 里绘制当前零件与连接目标之间的连线。 / Draw SceneView lines between this part and its resolved connection targets.
 	private void DrawConnectionHandles()
 	{
 		if (_connectionEndpoints == null || _connectionEndpoints.Count == 0)
@@ -477,6 +493,7 @@ public abstract class Part : MonoBehaviour
 		}
 	}
 
+	// 根据 targetMode 决定该读取哪个目标 id 属性名。 / Pick the target-id attribute name to read based on the current target mode.
 	private static string ResolveTargetIdsAttributeName(string targetMode, XElement targetingElement)
 	{
 		if (string.Equals(targetMode, "Custom", StringComparison.OrdinalIgnoreCase))
@@ -493,6 +510,7 @@ public abstract class Part : MonoBehaviour
 		return targetingElement.Attribute("customPartIds") != null ? "customPartIds" : "partIds";
 	}
 
+	// 在没有 XML 节点上下文时，根据 targetMode 回退到默认目标 id 属性名。 / Resolve the fallback target-id attribute name when no XML node context is available.
 	private static string ResolveTargetIdsAttributeName(string targetMode, string fallbackAttributeName)
 	{
 		if (string.Equals(targetMode, "Custom", StringComparison.OrdinalIgnoreCase))
@@ -509,6 +527,7 @@ public abstract class Part : MonoBehaviour
 		return string.Equals(fallbackAttributeName, "customPartIds", StringComparison.Ordinal) ? "customPartIds" : "partIds";
 	}
 
+	// 比较当前公共 Part 字段与缓存 XML 是否已经发生变化。 / Check whether the current common part fields differ from the cached XML.
 	private bool HasCommonXmlChanges(XElement partElement)
 	{
 		if (partElement == null)
@@ -545,6 +564,7 @@ public abstract class Part : MonoBehaviour
 		return !string.Equals((string)partElement.Attribute("materials") ?? string.Empty, _materialsText ?? string.Empty, StringComparison.Ordinal);
 	}
 
+	// 按需把公共 Part 属性写回导出 XML。 / Write the common Part attributes back into the export XML when needed.
 	private void WriteCommonPartAttributes(XElement partElement, bool writeAll)
 	{
 		if (writeAll || XmlUtil.ParseInt((string)partElement.Attribute("id"), int.MinValue) != _partId)
@@ -578,6 +598,7 @@ public abstract class Part : MonoBehaviour
 		}
 	}
 
+	// 用统一 epsilon 比较两个 Vector3 是否近似相等。 / Compare two Vector3 values using the shared epsilon.
 	private static bool Approximately(Vector3 a, Vector3 b)
 	{
 		const float epsilon = 0.0001f;
@@ -614,6 +635,7 @@ public abstract class Part : MonoBehaviour
 		return string.Join(",", ids);
 	}
 
+	// 解析一个逗号分隔的整数列表，但不做去重。 / Parse a comma-separated integer list without deduplicating it.
 	private static int[] ParseIntegerCsv(string csv)
 	{
 		if (string.IsNullOrWhiteSpace(csv))
@@ -629,6 +651,7 @@ public abstract class Part : MonoBehaviour
 			.ToArray();
 	}
 
+	// 判断一个缩放值是否仍可视为默认的 1,1,1。 / Check whether a scale value should still be treated as the default 1,1,1.
 	private static bool IsDefaultScale(Vector3 scale)
 	{
 		const float epsilon = 0.0001f;
@@ -660,7 +683,7 @@ public abstract class Part : MonoBehaviour
 	protected void QueuePreviewRefresh()
 	{
 		Craft craft = GetOwningCraft();
-		if (craft.IsRebuildingPreviews || craft.IsPreviewQueueSuppressed)
+		if (craft == null || craft.IsPreviewQueueSuppressed)
 		{
 			return;
 		}
@@ -714,6 +737,7 @@ public class OtherPart : Part
 		RemoveRenderPreview();
 	}
 
+	// 为普通零件绘制轻量的球形占位 Gizmo。 / Draw a lightweight spherical placeholder gizmo for generic parts.
 	private void OnDrawGizmos()
 	{
 		Event currentEvent = Event.current;
@@ -728,11 +752,13 @@ public class OtherPart : Part
 		Gizmos.matrix = oldMatrix;
 	}
 
+	// 保留基类的连接可视化绘制。 / Keep the base connection visualization when the generic part is selected.
 	protected override void OnDrawGizmosSelected()
 	{
 		base.OnDrawGizmosSelected();
 	}
 
+	// 移除挂在 OtherPart 上的临时渲染预览组件。 / Remove transient render preview components attached to OtherPart.
 	private void RemoveRenderPreview()
 	{
 		MeshFilter meshFilter = GetComponent<MeshFilter>();

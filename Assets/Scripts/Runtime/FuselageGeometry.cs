@@ -398,16 +398,19 @@ internal static class FuselageGeometry
 
 		public int Count => Points.Count;
 
+		// 读取一个逻辑点对应的内侧渲染顶点索引。 / Get the inner render-vertex index for one logical ring point.
 		public int GetInIndex(int index)
 		{
 			return MeshIndicesIn != null && index >= 0 && index < MeshIndicesIn.Length ? MeshIndicesIn[index] : -1;
 		}
 
+		// 读取一个逻辑点对应的外侧渲染顶点索引，缺省时回退到内侧索引。 / Get the outer render-vertex index for one logical ring point, falling back to the inner index when absent.
 		public int GetOutIndex(int index)
 		{
 			return MeshIndicesOut != null && index >= 0 && index < MeshIndicesOut.Length ? MeshIndicesOut[index] : GetInIndex(index);
 		}
 
+		// 追加一个逻辑轮廓点，并在重合时与前一个点合并。 / Append one logical contour point, merging with the previous point when they coincide.
 		private void AddLogicalPoint(Vector2 point, Vector2 inTangent, Vector2 outTangent, bool sharp)
 		{
 			if (Points.Count > 0 && Vector2.Distance(Points[^1], point) <= Epsilon)
@@ -842,6 +845,7 @@ internal static class FuselageGeometry
 			&& section.CornerRadii.W <= Epsilon;
 	}
 
+	// 计算轮廓边段在局部二维平面中的朝向角。 / Compute the orientation angle of one outline edge in local 2D space.
 	private static float GetOutlineEdgeAngle(Vector2 a, Vector2 b)
 	{
 		Vector2 edge = b - a;
@@ -1025,11 +1029,6 @@ internal static class FuselageGeometry
 	}
 
 	// 当几何 inset 对薄壁 hollow 截面失败时，退化成简单缩放的内环。 / Build a simple scaled inner loop when geometric insetting fails for thin hollow sections.
-	private static float ComputeThicknessInsetDistance(FuselageSectionSettings section)
-	{
-		return Mathf.Min(section.Width, section.Height) * 0.5f * Mathf.Clamp(section.Thickness, 0.01f, 0.99f);
-	}
-
 	private static FuselageSectionSettings BuildInnerSectionSettings(FuselageSectionSettings section)
 	{
 		FuselageSectionSettings inner = section;
@@ -1041,7 +1040,7 @@ internal static class FuselageGeometry
 		return inner;
 	}
 
-	// 原版 Hollow 优先生成独立的 inner section；只有在它不再位于 outer 内部时才退回几何 inset。 / Original Hollow prefers generating a dedicated inner section and only falls back to geometric inset when that no longer stays inside the outer ring.
+	// 原版 Hollow 直接生成独立的 inner section；这里保持同一主路径，不再退回旧的几何 inset fallback。 / Original Hollow generates a dedicated inner section directly; keep the runtime on that same path instead of falling back to the old geometric inset flow.
 	private static bool TryBuildInnerRing(FuselageSectionSettings section, Vector3 center, RingProfile outerRing, out RingProfile innerRing)
 	{
 		innerRing = null;
@@ -1052,225 +1051,13 @@ internal static class FuselageGeometry
 
 		FuselageSectionSettings innerSection = BuildInnerSectionSettings(section);
 		RingProfile directInnerRing = BuildSectionRing(innerSection, center);
-		if (directInnerRing.Count >= 3 && IsInsetLoopInside(outerRing.Points, directInnerRing.Points))
-		{
-			innerRing = directInnerRing;
-			return true;
-		}
-
-		return TryBuildInsetInnerRing(outerRing, section, ComputeThicknessInsetDistance(section), out innerRing);
-	}
-
-	// 按原版 JFuselage 的 Point + SimpleInset 语义对已生成 outer ring 做几何 fallback。 / Geometric fallback for hollow inner rings using Point + SimpleInset semantics on an already-built outer ring.
-	private static bool TryBuildInsetInnerRing(RingProfile outerRing, FuselageSectionSettings section, float insetDistance, out RingProfile innerRing)
-	{
-		innerRing = null;
-		if (outerRing == null || outerRing.Count < 3)
+		if (directInnerRing.Count < 3 || !IsInsetLoopInside(outerRing.Points, directInnerRing.Points))
 		{
 			return false;
 		}
 
-		List<SectionPoint> points = BuildSectionPoints(outerRing);
-		float minInnerEdgeLength = Mathf.Min(section.Width, section.Height) * 0.5f * 0.01f;
-		if (!TryInsetLoop(points, insetDistance, minInnerEdgeLength) || points.Count < 3)
-		{
-			return false;
-		}
-
-		List<Vector2> innerPositions = new List<Vector2>(points.Count);
-		List<Vector2> innerInTangents = new List<Vector2>(points.Count);
-		List<Vector2> innerOutTangents = new List<Vector2>(points.Count);
-		List<bool> innerSharp = new List<bool>(points.Count);
-		List<float> innerFractions = new List<float>(points.Count);
-		for (int i = 0; i < points.Count; i++)
-		{
-			SectionPoint point = points[i];
-			innerPositions.Add(point.Position);
-			innerInTangents.Add(point.InTangent);
-			innerOutTangents.Add(point.OutTangent);
-			innerSharp.Add(point.Sharp);
-			innerFractions.Add(point.Fraction);
-		}
-
-		if (!IsInsetLoopInside(outerRing.Points, innerPositions))
-		{
-			return false;
-		}
-
-		innerRing = new RingProfile(innerPositions, outerRing.Center, innerInTangents, innerOutTangents, innerSharp, innerFractions);
+		innerRing = directInnerRing;
 		return innerRing.Count >= 3;
-	}
-
-	private static List<SectionPoint> BuildSectionPoints(RingProfile ring)
-	{
-		List<SectionPoint> points = new List<SectionPoint>(ring.Count);
-		for (int i = 0; i < ring.Count; i++)
-		{
-			points.Add(new SectionPoint(
-				ring.Points[i],
-				ring.Fractions[i],
-				ring.InTangents[i],
-				ring.OutTangents[i],
-				ring.Sharp[i]));
-		}
-		return points;
-	}
-
-	// 按原版 SimpleInset(Point) 规则内缩逻辑点列表，边塌缩时保留 sharp tangent 与 fraction 传播。 / Inset logical section points like original SimpleInset(Point), preserving sharp tangents and fraction propagation through merges.
-	private static bool TryInsetLoop(List<SectionPoint> points, float inset, float minEdgeLength)
-	{
-		if (points == null || points.Count < 3 || inset <= Epsilon)
-		{
-			return points != null && points.Count >= 3;
-		}
-
-		List<Vector2> angleVectors = new List<Vector2>(points.Count);
-		for (int i = 0; i < points.Count; i++)
-		{
-			angleVectors.Add(FracToVec(points[i].Fraction));
-		}
-
-		float remaining = inset;
-		const int maxIterations = 64;
-		bool stopAtMinSize = false;
-		for (int iteration = 0; iteration < maxIterations && remaining > Epsilon && points.Count >= 3; iteration++)
-		{
-			MergeTinyEdges(points, angleVectors);
-			if (points.Count < 3)
-			{
-				break;
-			}
-
-			int count = points.Count;
-			float[] shrinkage = new float[count];
-			Vector2[] velocity = new Vector2[count];
-			for (int i = 0; i < count; i++)
-			{
-				Vector2 current = points[i].Position;
-				Vector2 previous = points[(i - 1 + count) % count].Position;
-				Vector2 next = points[(i + 1) % count].Position;
-				Vector2 inVec = current - previous;
-				Vector2 outVec = next - current;
-				if (inVec.sqrMagnitude <= Epsilon * Epsilon || outVec.sqrMagnitude <= Epsilon * Epsilon)
-				{
-					shrinkage[i] = 0f;
-					velocity[i] = Vector2.zero;
-					continue;
-				}
-
-				shrinkage[i] = ComputePointShrinkage(inVec, outVec);
-				velocity[i] = ComputePointVelocity(shrinkage[i], inVec);
-			}
-
-			float step = remaining;
-			float maxEdgeLimit = 0f;
-			List<int> edgesToMerge = new List<int>();
-			for (int i = 0; i < count; i++)
-			{
-				int next = (i + 1) % count;
-				float shrink = shrinkage[i] + shrinkage[next];
-				if (shrink <= Epsilon)
-				{
-					continue;
-				}
-
-				float edgeLimit = Vector2.Distance(points[i].Position, points[next].Position) / shrink;
-				maxEdgeLimit = Mathf.Max(maxEdgeLimit, edgeLimit);
-				if (edgeLimit <= Epsilon)
-				{
-					step = 0f;
-					edgesToMerge.Add(i);
-					continue;
-				}
-
-				if (step + Epsilon >= edgeLimit)
-				{
-					if (edgeLimit < step - 0.00001f)
-					{
-						edgesToMerge.Clear();
-					}
-					step = Mathf.Min(step, edgeLimit);
-					edgesToMerge.Add(i);
-				}
-			}
-
-			if (minEdgeLength > Epsilon && maxEdgeLimit > Epsilon)
-			{
-				float minSizeStep = maxEdgeLimit - minEdgeLength;
-				if (minSizeStep <= Epsilon)
-				{
-					break;
-				}
-
-				if (step > minSizeStep - Epsilon)
-				{
-					step = minSizeStep;
-					edgesToMerge.Clear();
-					stopAtMinSize = true;
-				}
-			}
-
-			if (step > Epsilon)
-			{
-				for (int i = 0; i < count; i++)
-				{
-					SectionPoint point = points[i];
-					point.Position += velocity[i] * step;
-					points[i] = point;
-				}
-			}
-			remaining -= step;
-
-			if (edgesToMerge.Count > 0)
-			{
-				MergeEdges(points, angleVectors, edgesToMerge);
-			}
-
-			if (stopAtMinSize)
-			{
-				break;
-			}
-		}
-
-		if (points.Count < 3)
-		{
-			return false;
-		}
-
-		for (int i = 0; i < points.Count; i++)
-		{
-			SectionPoint point = points[i];
-			point.Fraction = VecToFrac(angleVectors[i]);
-			points[i] = point;
-		}
-
-		return true;
-	}
-
-	private static float ComputePointShrinkage(Vector2 inVec, Vector2 outVec)
-	{
-		Vector2 inDir = inVec.normalized;
-		Vector2 outDir = outVec.normalized;
-		Vector2 inNormal = RotateClockwise(inDir);
-		Vector2 outNormal = RotateClockwise(outDir);
-		float denominator = Vector2.Dot(inNormal, outDir);
-		if (Mathf.Abs(denominator) <= Epsilon)
-		{
-			return 0f;
-		}
-
-		return Vector2.Dot(inNormal - outNormal, inNormal) / denominator;
-	}
-
-	private static Vector2 ComputePointVelocity(float pointShrinkage, Vector2 inVec)
-	{
-		Vector2 inDir = inVec.normalized;
-		return RotateClockwise(inDir) - inDir * pointShrinkage;
-	}
-
-	private static Vector2 RotateClockwise(Vector2 value)
-	{
-		return new Vector2(value.y, -value.x);
 	}
 
 	private static bool IsInsetLoopInside(List<Vector2> outer, List<Vector2> inner)
@@ -1306,78 +1093,6 @@ internal static class FuselageGeometry
 		}
 
 		return true;
-	}
-
-	private static void MergeTinyEdges(List<SectionPoint> points, List<Vector2> angleVectors)
-	{
-		for (int i = 0; i < points.Count && points.Count >= 3; i++)
-		{
-			int next = (i + 1) % points.Count;
-			if ((points[i].Position - points[next].Position).sqrMagnitude > Epsilon * Epsilon)
-			{
-				continue;
-			}
-
-			RemoveEdgeNextPoint(points, angleVectors, i);
-			i = Mathf.Max(-1, i - 1);
-		}
-	}
-
-	private static void MergeEdges(List<SectionPoint> points, List<Vector2> angleVectors, List<int> edgesToMerge)
-	{
-		edgesToMerge.Sort();
-		bool mergeWrappedEdge = false;
-		for (int i = edgesToMerge.Count - 1; i >= 0 && points.Count >= 3; i--)
-		{
-			int edge = Mathf.Clamp(edgesToMerge[i], 0, points.Count - 1);
-			if (edge >= points.Count - 1)
-			{
-				mergeWrappedEdge = true;
-				continue;
-			}
-
-			RemoveEdgeNextPoint(points, angleVectors, edge);
-		}
-
-		if (mergeWrappedEdge && points.Count >= 3)
-		{
-			RemoveEdgeNextPoint(points, angleVectors, points.Count - 1);
-		}
-	}
-
-	private static void RemoveEdgeNextPoint(List<SectionPoint> points, List<Vector2> angleVectors, int edge)
-	{
-		if (points.Count < 3)
-		{
-			return;
-		}
-
-		int clampedEdge = Mathf.Clamp(edge, 0, points.Count - 1);
-		int next = (clampedEdge + 1) % points.Count;
-		SectionPoint current = points[clampedEdge];
-		SectionPoint nextPoint = points[next];
-		current.Sharp = true;
-		current.OutTangent = nextPoint.Sharp ? nextPoint.OutTangent : nextPoint.InTangent;
-		points[clampedEdge] = current;
-		angleVectors[clampedEdge] += angleVectors[next];
-		points.RemoveAt(next);
-		angleVectors.RemoveAt(next);
-	}
-
-	private static Vector2 FracToVec(float fraction)
-	{
-		float angle = Mathf.Repeat(fraction, 1f) * Mathf.PI * 2f;
-		return new Vector2(Mathf.Sin(angle), Mathf.Cos(angle));
-	}
-
-	private static float VecToFrac(Vector2 value)
-	{
-		if (value.sqrMagnitude <= Epsilon * Epsilon)
-		{
-			return 0f;
-		}
-
-		return Mathf.Repeat(Mathf.Atan2(value.x, value.y) / (Mathf.PI * 2f), 1f);
 	}
 
 	// 把多边形裁到当前 loft slice 的插值 cut 边界内。 / Clip a polygon against the interpolated cut bounds for one loft slice.

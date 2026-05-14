@@ -554,6 +554,7 @@ namespace MeshTools
             return mesh;
         }
 
+        // 把 MeshData 内部缓存重新导出成 PreviewMeshData。 / Export the internal MeshData buffers back into PreviewMeshData.
         public PreviewMeshData ToPreviewMeshData(string meshName)
         {
             PreviewMeshData data = new PreviewMeshData(meshName);

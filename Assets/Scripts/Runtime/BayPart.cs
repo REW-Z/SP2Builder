@@ -32,6 +32,7 @@ public class BayPart : Part, IFuselageCarver
 
     private MeshRenderer _meshRenderer;
 
+    // 从 Part XML 中读取 Bay 的参数状态。 / Read the procedural bay parameters from the part XML.
     protected override void LoadPartState(XElement partElement)
     {
         if(partElement.Element("ProceduralBay.State") is not XElement stateElement)
@@ -47,6 +48,7 @@ public class BayPart : Part, IFuselageCarver
         _startOpen = XmlUtil.ParseBool((string)stateElement.Attribute("startOpen"));
     }
 
+	// 把当前 Bay 参数写回 ProceduralBay.State XML。 / Write the current bay parameters back into the ProceduralBay.State XML.
     protected override void WritePartState(XElement partElement)
     {
         XElement stateElement = string.IsNullOrWhiteSpace(_rawStateXml) ? new XElement("ProceduralBay.State") : XElement.Parse(_rawStateXml);
@@ -61,6 +63,7 @@ public class BayPart : Part, IFuselageCarver
         partElement.Add(stateElement);
     }
 
+	// 刷新 Bay 在编辑器里的线框预览。 / Refresh the bay wireframe preview in the editor.
     public override void RefreshPreview()
     {
         if(RequestCraftPreviewRebuild())
@@ -76,6 +79,7 @@ public class BayPart : Part, IFuselageCarver
         _meshRenderer.sharedMaterial = PreviewMaterialFactory.GetBayMaterial(this);
     }
 
+	// 构建用于机身布尔切割的 Bay 闭体 PreviewMeshData。 / Build the closed Bay PreviewMeshData used for fuselage cutting booleans.
     public bool TryBuildCutPreviewData(FuselagePart target, out PreviewMeshData previewMeshData)
     {
         previewMeshData = null;
@@ -88,11 +92,13 @@ public class BayPart : Part, IFuselageCarver
         return previewMeshData != null && previewMeshData.Vertices.Count > 0;
     }
 
+	// 生成 Bay 在局部截面平面中的二维外轮廓。 / Build the 2D local outline used by the bay preview and cutter.
     private List<Vector2> BuildOutline()
     {
         return FuselageCarverUtility.BuildBayOutline(_width, _height, _cornerRadius);
     }
 
+	// 返回参与预览和切割时使用的有效深度。 / Return the effective depth used for preview and cutting.
     private float GetCutDepth()
     {
 		return Mathf.Max(0.01f, _depth);

@@ -21,6 +21,7 @@ namespace SP2Builder.ManifoldRuntime
 			_ptr = ptr;
 		}
 
+		// 把 PreviewMeshData 变成 native manifold 句柄，并返回构造状态。 / Convert PreviewMeshData into a native manifold handle and return the construction status.
 		public static ManifoldHandle Create(PreviewMeshData meshData, out ManifoldError status)
 		{
 			status = ManifoldError.INVALID_CONSTRUCTION;
@@ -56,11 +57,13 @@ namespace SP2Builder.ManifoldRuntime
 			}
 		}
 
+		// 复制一个独立的 native manifold 实例。 / Create an independent copy of the native manifold.
 		public ManifoldHandle Copy()
 		{
 			return CreateFromNative(storage => ManifoldNativeMethods.manifold_copy(storage, _ptr));
 		}
 
+		// 对当前 manifold 应用一个 4x4 变换并返回新实例。 / Apply a 4x4 transform to the current manifold and return the transformed copy.
 		public ManifoldHandle Transform(Matrix4x4 matrix)
 		{
 			Vector4 c0 = matrix.GetColumn(0);
@@ -84,16 +87,19 @@ namespace SP2Builder.ManifoldRuntime
 				c3.z));
 		}
 
+	// 对当前 manifold 执行减法布尔。 / Run a subtract boolean against the current manifold.
 		public ManifoldHandle Subtract(ManifoldHandle other)
 		{
 			return Boolean(other, ManifoldOpType.SUBTRACT);
 		}
 
+	// 对当前 manifold 执行相交布尔。 / Run an intersect boolean against the current manifold.
 		public ManifoldHandle Intersect(ManifoldHandle other)
 		{
 			return Boolean(other, ManifoldOpType.INTERSECT);
 		}
 
+	// 读取 native manifold 的包围盒。 / Read the bounding box of the native manifold.
 		public Bounds BoundingBox()
 		{
 			NativeBox box = default;
@@ -108,11 +114,13 @@ namespace SP2Builder.ManifoldRuntime
 			return new Bounds((min + max) * 0.5f, max - min);
 		}
 
+		// 把当前 native manifold 重新导出成 PreviewMeshData。 / Export the current native manifold back into PreviewMeshData.
 		public PreviewMeshData ToPreviewMeshData(string meshName)
 		{
 			return ManifoldPreviewMeshUtility.ToPreviewMeshData(this, meshName);
 		}
 
+		// 释放 native manifold 占用的托管外资源。 / Release the unmanaged resources held by the native manifold.
 		public void Dispose()
 		{
 			if (_ptr == IntPtr.Zero)
@@ -125,6 +133,7 @@ namespace SP2Builder.ManifoldRuntime
 			_ptr = IntPtr.Zero;
 		}
 
+		// 统一封装 subtract/intersect 这类二元布尔调用。 / Share the common native path for binary boolean operations.
 		private ManifoldHandle Boolean(ManifoldHandle other, ManifoldOpType operation)
 		{
 			if (_ptr == IntPtr.Zero || other == null || other._ptr == IntPtr.Zero)
@@ -135,6 +144,7 @@ namespace SP2Builder.ManifoldRuntime
 			return CreateFromNative(storage => ManifoldNativeMethods.manifold_boolean(storage, _ptr, other._ptr, operation));
 		}
 
+	// 从一个 native 工厂函数创建托管包装句柄。 / Create the managed wrapper from a native manifold factory callback.
 		private static ManifoldHandle CreateFromNative(Func<IntPtr, IntPtr> factory)
 		{
 			if (!ManifoldRuntimeAvailability.IsAvailable)

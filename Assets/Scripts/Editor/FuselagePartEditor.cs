@@ -403,6 +403,7 @@ internal class RawXmlTextEditorWindow : EditorWindow
 
 	private Vector2 _scroll;
 
+	// 打开一个独立窗口查看并编辑缓存的 XML 文本。 / Open a standalone window to inspect and edit cached XML text.
 	public static void Open(Object targetObject, string propertyPath, string label)
 	{
 		if (targetObject == null || string.IsNullOrWhiteSpace(propertyPath))
@@ -419,6 +420,7 @@ internal class RawXmlTextEditorWindow : EditorWindow
 		window.Show();
 	}
 
+	// 绘制 XML 文本编辑窗口的主体界面。 / Draw the main UI of the cached XML text editor window.
 	private void OnGUI()
 	{
 		if (_targetObject == null || string.IsNullOrWhiteSpace(_propertyPath))
@@ -447,6 +449,7 @@ internal class RawXmlTextEditorWindow : EditorWindow
 		EditorGUILayout.EndHorizontal();
 	}
 
+	// 从目标对象重新读取当前缓存 XML 文本。 / Reload the current cached XML text from the target object.
 	private void LoadText()
 	{
 		SerializedObject serializedObject = new SerializedObject(_targetObject);
@@ -454,6 +457,7 @@ internal class RawXmlTextEditorWindow : EditorWindow
 		_text = property != null && property.propertyType == SerializedPropertyType.String ? property.stringValue : string.Empty;
 	}
 
+	// 把编辑后的 XML 文本写回目标序列化属性。 / Write the edited XML text back into the target serialized property.
 	private void ApplyText()
 	{
 		SerializedObject serializedObject = new SerializedObject(_targetObject);

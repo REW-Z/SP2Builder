@@ -286,6 +286,7 @@ public class FuselagePart : Part
 		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
 	}
 
+	// 清空当前机身预览网格，但保留预览材质状态。 / Clear the current fuselage preview mesh while preserving the preview material state.
 	private void ClearPreviewMesh()
 	{
 		if (_meshFilter == null)
@@ -302,6 +303,7 @@ public class FuselagePart : Part
 		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
 	}
 
+	// 在拓扑不变时仅更新现有 loft Mesh 的顶点和法线。 / Update only the existing loft mesh vertices and normals when topology stays unchanged.
 	private bool TryUpdateExistingLoftMesh(bool capRear, bool capFront, bool applySectionCutting)
 	{
 		if (applySectionCutting && (HasSectionCutting(_rearSection) || HasSectionCutting(_frontSection)))
@@ -350,6 +352,7 @@ public class FuselagePart : Part
 		return true;
 	}
 
+	// 判断一个截面是否启用了任意方向的 slice cutting。 / Check whether a section enables slice cutting on any side.
 	private static bool HasSectionCutting(FuselageSectionSettings section)
 	{
 		return section.GetCutEnabled(0)
@@ -358,6 +361,7 @@ public class FuselagePart : Part
 			|| section.GetCutEnabled(3);
 	}
 
+	// 检查当前 Craft 中是否存在显式目标指向此机身的 cutter。 / Check whether the current craft contains any cutter explicitly targeting this fuselage.
 	private bool HasTargetedCarvers()
 	{
 		Craft craft = GetOwningCraft();
@@ -374,6 +378,7 @@ public class FuselagePart : Part
 		return false;
 	}
 
+	// 判断一个 Part 是否应作为当前机身的定向 cutter 参与布尔。 / Check whether a Part should act as a targeted cutter for this fuselage.
 	private bool IsTargetedCarver(Part part)
 	{
 		return part != null
@@ -391,6 +396,7 @@ public class FuselagePart : Part
 		Craft.RegisterEditorUpdate(ApplyCompletedMeshJob);
 	}
 
+	// 机身禁用时失效所有后台结果并取消主线程回填回调。 / Invalidate background results and unregister the main-thread apply callback when the fuselage is disabled.
 	protected override void OnDisable()
 	{
 		Craft.UnregisterEditorUpdate(ApplyCompletedMeshJob);
@@ -406,6 +412,7 @@ public class FuselagePart : Part
 		base.OnValidate();
 	}
 
+	// 将指定前后端面吸附到已连接邻居的对应端面。 / Snap the requested fuselage end onto its connected neighbor's matching end.
 	public bool SnapEndToConnected(bool front)
 	{
 		if (!TryFindConnectedNeighbour(front, out FuselagePart neighbour, out bool neighbourFront))
@@ -427,6 +434,7 @@ public class FuselagePart : Part
 		return true;
 	}
 
+	// 返回前后端和四个中段侧面的 attach point 局部坐标。 / Return the local attach-point positions for both ends and the four mid-section sides.
 	public override Vector3 GetAttachPointLocalPosition(int attachPointId)
 	{
 		return attachPointId switch
@@ -447,6 +455,7 @@ public class FuselagePart : Part
 		ApplyNeighbourSmoothing(craft, null);
 	}
 
+	// 仅对受影响机身集合执行接缝法线平滑。 / Smooth seam normals only for the affected fuselage subset.
 	public static void ApplyNeighbourSmoothing(Craft craft, IReadOnlyCollection<int> affectedPartIds)
 	{
 		FuselagePart[] fuselages = craft.GetComponentsInChildren<FuselagePart>(includeInactive: true);
@@ -492,6 +501,7 @@ public class FuselagePart : Part
 		}
 	}
 
+	// 按显式连接关系平滑已连接机身端面的法线。 / Smooth normals across fuselage ends that are explicitly connected.
 	private static void SmoothConnectedEnds(
 		IReadOnlyList<FuselagePart> fuselages,
 		Dictionary<FuselagePart, Vector3[]> baseNormals,
@@ -538,6 +548,7 @@ public class FuselagePart : Part
 		}
 	}
 
+	// 在没有连接数据时，按空间匹配关系平滑可能相接的端面。 / Smooth potentially matching ends by spatial matching when no connection data exists.
 	private static void SmoothSpatiallyMatchedEnds(
 		IReadOnlyList<FuselagePart> fuselages,
 		Dictionary<FuselagePart, Vector3[]> baseNormals,
@@ -571,6 +582,7 @@ public class FuselagePart : Part
 		}
 	}
 
+	// 对一对端面执行单向或双向的接缝法线平滑。 / Apply one-way or two-way seam normal smoothing to one matched end pair.
 	private static void SmoothEndPair(
 		FuselagePart a,
 		bool aFront,
@@ -597,6 +609,7 @@ public class FuselagePart : Part
 		}
 	}
 
+	// 快速判断一对显式连接端面是否允许参与平滑。 / Quickly decide whether one explicitly connected end pair is eligible for smoothing.
 	private static bool AreConnectedEndsSmoothable(FuselagePart a, bool aFront, FuselagePart b, bool bFront)
 	{
 		if (a == null || b == null)
@@ -621,6 +634,7 @@ public class FuselagePart : Part
 		return Vector3.Dot(aNormal, -bNormal) >= 0.98f;
 	}
 
+	// 为一对端面生成稳定且与顺序无关的访问键。 / Build a stable order-independent key for one seam end pair.
 	private static string BuildEndPairKey(FuselagePart a, bool aFront, FuselagePart b, bool bFront)
 	{
 		string aKey = $"{a.PartId}:{(aFront ? 1 : 0)}";
@@ -701,6 +715,7 @@ public class FuselagePart : Part
 		CanonicalizeSection(ref _frontSection);
 	}
 
+	// 钳制截面尺寸、圆角和切割值到当前几何允许的范围内。 / Clamp section size, corner, and cut values into the range allowed by the current geometry.
 	private static void CanonicalizeSection(ref FuselageSectionSettings section)
 	{
 		section.Sanitize();
@@ -932,6 +947,7 @@ public class FuselagePart : Part
 		return Matrix4x4.TRS(transform.localPosition, transform.localRotation, transform.localScale).MultiplyPoint3x4(localPoint);
 	}
 
+	// 把机身局部向量转换到 Craft 本地空间，用于带缩放的尺寸比较。 / Convert a fuselage-local vector into craft-local space for size comparisons that include scale.
 	private Vector3 TransformVectorToCraftSpace(Vector3 localVector)
 	{
 		return Matrix4x4.TRS(Vector3.zero, transform.localRotation, transform.localScale).MultiplyVector(localVector);
@@ -987,6 +1003,7 @@ public class FuselagePart : Part
 		return front ? _frontSection : _rearSection;
 	}
 
+	// 按当前 Transform 缩放推导端截面在 Craft 空间里的实际尺寸。 / Derive the actual end-section dimensions in craft space under the current Transform scale.
 	private FuselageSectionSettings GetScaledEndSection(bool front)
 	{
 		FuselageSectionSettings section = GetEndSection(front);
@@ -1004,6 +1021,7 @@ public class FuselagePart : Part
 		return section;
 	}
 
+	// 从连接端点中查找指定前后端的已连接邻居机身。 / Find the connected neighboring fuselage for the requested front or rear end.
 	private bool TryFindConnectedNeighbour(bool front, out FuselagePart neighbour, out bool neighbourFront)
 	{
 		neighbour = null;
@@ -1034,6 +1052,7 @@ public class FuselagePart : Part
 		return false;
 	}
 
+	// 计算机身中段四个侧向 attach point 的局部坐标。 / Compute the local positions of the four side attach points at the fuselage midpoint.
 	private Vector3 GetMidSectionSidePoint(int sideIndex)
 	{
 		FuselageSectionSettings section = FuselageSectionSettings.Lerp(_rearSection, _frontSection, 0.5f);
@@ -1100,6 +1119,7 @@ public class FuselagePart : Part
 		return element;
 	}
 
+	// 把一个截面写入或更新到指定的 JFuselage 状态节点下。 / Write or update one section under the target JFuselage state node.
 	private static void WriteJSectionElement(XElement stateElement, string name, FuselageSectionSettings section)
 	{
 		XElement element = stateElement.Element(name);
@@ -1112,6 +1132,7 @@ public class FuselagePart : Part
 		WriteJSectionAttributes(element, section);
 	}
 
+	// 把统一截面设置序列化成一个 JFuselage 截面节点的全部属性。 / Serialize the unified section settings into all attributes of one JFuselage section node.
 	private static void WriteJSectionAttributes(XElement element, FuselageSectionSettings section)
 	{
 		section.Sanitize();

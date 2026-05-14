@@ -79,6 +79,7 @@ public struct Float4Value
 			Mathf.Max(a.W, b.W));
 	}
 
+	// 返回四个分量中的最大值。 / Return the largest component among the four stored values.
 	public float MaxComponent()
 	{
 		return Mathf.Max(Mathf.Max(X, Y), Mathf.Max(Z, W));
@@ -158,6 +159,7 @@ public struct Int4Value
 			Mathf.Max(a.W, b.W));
 	}
 
+	// 返回四个整型分量中的最大值。 / Return the largest component among the four stored integers.
 	public int MaxComponent()
 	{
 		return Mathf.Max(Mathf.Max(X, Y), Mathf.Max(Z, W));
@@ -228,6 +230,7 @@ public struct Bool4Value
 		return new Bool4Value(value, value, value, value);
 	}
 
+	// 把四个布尔值转换成 0/1 的 Float4 掩码。 / Convert the four booleans into a 0/1 Float4 mask.
 	public Float4Value ToFloatMask()
 	{
 		return new Float4Value(X ? 1f : 0f, Y ? 1f : 0f, Z ? 1f : 0f, W ? 1f : 0f);

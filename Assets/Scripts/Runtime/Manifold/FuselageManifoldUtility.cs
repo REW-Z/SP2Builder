@@ -8,6 +8,7 @@ namespace SP2Builder.ManifoldRuntime
 	{
 		private const double MinimumValidVolume = 1.1920928955078125E-07d;
 
+		// 把机身 loft 输入转成 manifold，并在需要时执行 section-cutting 相交。 / Convert loft input into a manifold and optionally apply section-cutting intersection.
 		public static PreviewMeshData BuildLoft(PreviewMeshData source, FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool applySectionCutting, string meshName)
 		{
 			if (source == null)
@@ -68,6 +69,7 @@ namespace SP2Builder.ManifoldRuntime
 			}
 		}
 
+		// 用 runtime manifold 对机身和 cutter 执行减法布尔。 / Subtract a cutter from a fuselage preview mesh using the runtime manifold path.
 		public static PreviewMeshData Subtract(PreviewMeshData source, PreviewMeshData cutter, Matrix4x4 cutterToSource, string meshName)
 		{
 			if (source == null)
@@ -89,6 +91,7 @@ namespace SP2Builder.ManifoldRuntime
 			return ExecuteBoolean(source, cutter, cutterToSource, ManifoldOpType.SUBTRACT, meshName, "targeted cutter boolean");
 		}
 
+		// 统一封装 runtime manifold 的 source/cutter 构造和布尔执行。 / Share the source/cutter construction and boolean execution path for runtime manifold operations.
 		private static PreviewMeshData ExecuteBoolean(PreviewMeshData source, PreviewMeshData cutter, Matrix4x4 cutterToSource, ManifoldOpType operation, string meshName, string context)
 		{
 			try
@@ -96,11 +99,6 @@ namespace SP2Builder.ManifoldRuntime
 				using ManifoldHandle sourceManifold = ManifoldHandle.Create(source, out ManifoldError sourceStatus);
 				if (!IsUsable(sourceManifold, sourceStatus))
 				{
-					PreviewMeshData fallback = TryFallbackTargetedBoolean(source, cutter, cutterToSource, operation, meshName, context, $"source build failed: {sourceStatus}");
-					if (fallback != null)
-					{
-						return fallback;
-					}
 					Debug.LogWarning($"manifold source build failed during {context}: {sourceStatus}");
 					return null;
 				}
@@ -108,11 +106,6 @@ namespace SP2Builder.ManifoldRuntime
 				using ManifoldHandle cutterManifold = CreateBooleanCutterManifold(cutter, cutterToSource, context);
 				if (cutterManifold == null)
 				{
-					PreviewMeshData fallback = TryFallbackTargetedBoolean(source, cutter, cutterToSource, operation, meshName, context, "cutter manifold build/transform failed");
-					if (fallback != null)
-					{
-						return fallback;
-					}
 					return null;
 				}
 
@@ -123,11 +116,6 @@ namespace SP2Builder.ManifoldRuntime
 				ManifoldError resultStatus = result?.Status ?? ManifoldError.INVALID_CONSTRUCTION;
 				if (result == null || resultStatus != ManifoldError.NO_ERROR)
 				{
-					PreviewMeshData fallback = TryFallbackTargetedBoolean(source, cutter, cutterToSource, operation, meshName, context, $"{operation} failed: {resultStatus}");
-					if (fallback != null)
-					{
-						return fallback;
-					}
 					Debug.LogWarning($"manifold {operation} failed during {context}: {resultStatus}");
 					return null;
 				}
@@ -149,34 +137,7 @@ namespace SP2Builder.ManifoldRuntime
 			}
 		}
 
-		private static PreviewMeshData TryFallbackTargetedBoolean(PreviewMeshData source, PreviewMeshData cutter, Matrix4x4 cutterToSource, ManifoldOpType operation, string meshName, string context, string failureReason)
-		{
-			if (operation != ManifoldOpType.SUBTRACT || !string.Equals(context, "targeted cutter boolean", StringComparison.OrdinalIgnoreCase))
-			{
-				return null;
-			}
-
-			try
-			{
-				PreviewMeshData fallback = MeshTools.ManifoldBoolean.Subtract(source, Matrix4x4.identity, cutter, cutterToSource);
-				if (fallback != null && fallback.Vertices.Count > 0)
-				{
-					fallback.Name = meshName;
-					Debug.LogWarning($"falling back to MeshTools manifold boolean during {context}: {failureReason}");
-					return fallback;
-				}
-			}
-			catch (Exception exception) when (
-				exception is DllNotFoundException
-				|| exception is EntryPointNotFoundException
-				|| exception is BadImageFormatException)
-			{
-				ManifoldRuntimeAvailability.LogUnavailableOnce(context + " fallback");
-			}
-
-			return null;
-		}
-
+		// 过滤掉空体、错误状态或近似零体积的 native manifold。 / Filter out native manifolds that are empty, invalid, or effectively zero-volume.
 		private static bool IsUsable(ManifoldHandle manifold, ManifoldError status)
 		{
 			return manifold != null
@@ -185,6 +146,7 @@ namespace SP2Builder.ManifoldRuntime
 				&& manifold.Volume >= MinimumValidVolume;
 		}
 
+		// 为布尔运算准备 cutter manifold，必要时先把变换烘焙进 PreviewMeshData。 / Prepare the cutter manifold for booleans, baking the transform into PreviewMeshData when needed.
 		private static ManifoldHandle CreateBooleanCutterManifold(PreviewMeshData cutter, Matrix4x4 cutterToSource, string context)
 		{
 			using ManifoldHandle cutterLocalManifold = ManifoldHandle.Create(cutter, out ManifoldError cutterStatus);
@@ -214,6 +176,7 @@ namespace SP2Builder.ManifoldRuntime
 			return null;
 		}
 
+		// 把一个 native manifold 安全地导出成带名字的 PreviewMeshData。 / Safely export a native manifold into a named PreviewMeshData instance.
 		private static PreviewMeshData ToPreviewMeshData(ManifoldHandle manifold, string meshName)
 		{
 			PreviewMeshData output = manifold?.ToPreviewMeshData(meshName);
@@ -224,6 +187,7 @@ namespace SP2Builder.ManifoldRuntime
 			return output;
 		}
 
+		// 把矩阵直接烘到 PreviewMeshData 顶点和索引上。 / Bake a matrix directly into PreviewMeshData vertices and triangle winding.
 		private static PreviewMeshData BakePreviewMeshTransform(PreviewMeshData source, Matrix4x4 transform)
 		{
 			PreviewMeshData transformed = new PreviewMeshData(string.IsNullOrWhiteSpace(source?.Name) ? "PreviewMesh" : source.Name + "_Baked");
@@ -267,6 +231,7 @@ namespace SP2Builder.ManifoldRuntime
 			return transformed;
 		}
 
+		// 计算矩阵线性部分的行列式，以判断是否发生镜像翻转。 / Compute the determinant of the matrix linear part to detect mirrored transforms.
 		private static float GetLinearDeterminant(Matrix4x4 matrix)
 		{
 			Vector3 x = matrix.GetColumn(0);
@@ -275,6 +240,7 @@ namespace SP2Builder.ManifoldRuntime
 			return Vector3.Dot(x, Vector3.Cross(y, z));
 		}
 
+		// 根据前后截面的 cutting 范围生成用于相交的闭体 cut-volume。 / Build the closed cut-volume used to intersect the fuselage against front and rear cutting ranges.
 		private static PreviewMeshData BuildCutVolume(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, string meshName)
 		{
 			if (!HasSectionCutting(rear) && !HasSectionCutting(front))
@@ -301,6 +267,7 @@ namespace SP2Builder.ManifoldRuntime
 				meshName);
 		}
 
+		// 从两端截面的矩形包围变化构建一个可 manifold 化的裁切闭体。 / Construct a manifold-friendly clipping volume from the changing rectangular bounds of both end sections.
 		private static PreviewMeshData BuildCutVolumeData(Vector2 min1, Vector2 max1, Vector2 min2, Vector2 max2, float zOffset, string meshName)
 		{
 			if (zOffset < 1.4E-44f)
@@ -482,6 +449,7 @@ namespace SP2Builder.ManifoldRuntime
 			return builder.ToPreviewMeshData();
 		}
 
+		// 判断一个截面是否启用了任意方向的 cutting。 / Check whether a section enables cutting on any side.
 		private static bool HasSectionCutting(FuselageSectionSettings section)
 		{
 			return section.GetCutEnabled(0)
@@ -490,6 +458,7 @@ namespace SP2Builder.ManifoldRuntime
 				|| section.GetCutEnabled(3);
 		}
 
+		// 计算一个截面在本地 2D 平面中的有效 cutting 边界。 / Compute the effective local 2D cutting bounds for one section.
 		private static CutBounds GetCutBounds(FuselageSectionSettings section, Vector2 center)
 		{
 			section.GetCuttingRange(out Float4Value minCutting, out Float4Value maxCutting);
@@ -518,6 +487,7 @@ namespace SP2Builder.ManifoldRuntime
 			return new CutBounds(minX, minY, maxX, maxY);
 		}
 
+		// 对两个 Vector2 逐分量取最大值。 / Take the component-wise maximum of two Vector2 values.
 		private static Vector2 ComponentMax(Vector2 a, Vector2 b)
 		{
 			return new Vector2(Mathf.Max(a.x, b.x), Mathf.Max(a.y, b.y));
@@ -525,6 +495,7 @@ namespace SP2Builder.ManifoldRuntime
 
 		private readonly struct CutBounds
 		{
+			// 保存一个截面的二维 cutting 包围盒。 / Store the 2D cutting bounds for one section.
 			public CutBounds(float minX, float minY, float maxX, float maxY)
 			{
 				MinX = minX;
@@ -548,33 +519,39 @@ namespace SP2Builder.ManifoldRuntime
 			private readonly List<int> _triangles = new List<int>();
 			private readonly string _meshName;
 
+			// 创建一个累积 cut-volume 三角面的临时构建器。 / Create a temporary builder that accumulates cut-volume triangles.
 			public CutVolumeBuilder(string meshName)
 			{
 				_meshName = meshName;
 			}
 
+			// 追加一个按当前 winding 写入的三角形。 / Append one triangle using the current winding order.
 			public void Tri(Vector3 a, Vector3 b, Vector3 c)
 			{
 				AddTriangle(a, b, c);
 			}
 
+			// 追加一个反向 winding 的三角形。 / Append one triangle with reversed winding.
 			public void RTri(Vector3 a, Vector3 b, Vector3 c)
 			{
 				AddTriangle(a, c, b);
 			}
 
+			// 追加一个按当前 winding 拆分的四边形。 / Append one quad split into triangles using the current winding order.
 			public void Quad(Vector3 a, Vector3 b, Vector3 c, Vector3 d)
 			{
 				AddTriangle(a, b, c);
 				AddTriangle(a, c, d);
 			}
 
+			// 追加一个反向 winding 的四边形。 / Append one quad with reversed winding.
 			public void RQuad(Vector3 a, Vector3 b, Vector3 c, Vector3 d)
 			{
 				AddTriangle(a, c, b);
 				AddTriangle(a, d, c);
 			}
 
+			// 把累计的 cut-volume 三角形输出为 PreviewMeshData。 / Export the accumulated cut-volume triangles as PreviewMeshData.
 			public PreviewMeshData ToPreviewMeshData()
 			{
 				if (_triangles.Count == 0)
@@ -587,6 +564,7 @@ namespace SP2Builder.ManifoldRuntime
 				return result;
 			}
 
+			// 以独立顶点的方式追加一个三角面。 / Append one triangle face using independent vertices.
 			private void AddTriangle(Vector3 a, Vector3 b, Vector3 c)
 			{
 				int start = _vertices.Count;

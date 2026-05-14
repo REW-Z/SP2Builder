@@ -190,6 +190,7 @@ namespace SP2Builder.ManifoldRuntime
 			}
 		}
 
+		// 释放 native MeshGL 句柄及其托管外内存。 / Release the native MeshGL handle and its unmanaged storage.
 		public void Dispose()
 		{
 			if (_ptr == IntPtr.Zero)

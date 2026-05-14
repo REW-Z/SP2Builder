@@ -6,6 +6,7 @@ using UnityEngine;
 [CustomEditor(typeof(Craft))]
 public class CraftEditor : UnityEditor.Editor
 {
+	// 绘制 Craft 根对象的自定义 Inspector 与导入导出按钮。 / Draw the custom inspector and import/export actions for the craft root.
 	public override void OnInspectorGUI()
 	{
 		serializedObject.Update();
@@ -55,6 +56,7 @@ public class CraftEditor : UnityEditor.Editor
 	}
 
 	[MenuItem("GameObject/SP2 Craft Editor/Create Craft Root", false, 10)]
+	// 在层级面板里创建一个新的 Craft 根对象。 / Create a new Craft root object from the hierarchy menu.
 	private static void CreateCraftRoot(MenuCommand command)
 	{
 		GameObject root = new GameObject("Craft");

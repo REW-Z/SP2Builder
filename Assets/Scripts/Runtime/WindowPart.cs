@@ -31,6 +31,7 @@ public class WindowPart : Part, IFuselageCarver
 
     private MeshRenderer _meshRenderer;
 
+    // 从 Part XML 中读取 Window 的参数状态。 / Read the procedural window parameters from the part XML.
     protected override void LoadPartState(XElement partElement)
     {
         if(partElement.Element("ProceduralWindow.State") is not XElement stateElement)
@@ -46,6 +47,7 @@ public class WindowPart : Part, IFuselageCarver
         _hideGlass = XmlUtil.ParseBool((string)stateElement.Attribute("hideGlass"));
     }
 
+	// 把当前 Window 参数写回 ProceduralWindow.State XML。 / Write the current window parameters back into the ProceduralWindow.State XML.
     protected override void WritePartState(XElement partElement)
     {
         XElement stateElement = string.IsNullOrWhiteSpace(_rawStateXml) ? new XElement("ProceduralWindow.State") : XElement.Parse(_rawStateXml);
@@ -60,6 +62,7 @@ public class WindowPart : Part, IFuselageCarver
         partElement.Add(stateElement);
     }
 
+	// 刷新 Window 在编辑器里的线框预览。 / Refresh the window wireframe preview in the editor.
     public override void RefreshPreview()
     {
         if(RequestCraftPreviewRebuild())
@@ -75,6 +78,7 @@ public class WindowPart : Part, IFuselageCarver
         _meshRenderer.sharedMaterial = PreviewMaterialFactory.GetWindowMaterial(this);
     }
 
+	// 构建用于机身布尔切割的 Window 闭体 PreviewMeshData。 / Build the closed Window PreviewMeshData used for fuselage cutting booleans.
     public bool TryBuildCutPreviewData(FuselagePart target, out PreviewMeshData previewMeshData)
     {
         previewMeshData = null;
@@ -87,6 +91,7 @@ public class WindowPart : Part, IFuselageCarver
         return previewMeshData != null && previewMeshData.Vertices.Count > 0;
     }
 
+	// 生成 Window 在局部截面平面中的二维外轮廓。 / Build the 2D local outline used by the window preview and cutter.
     private List<Vector2> BuildOutline()
     {
         return FuselageCarverUtility.BuildWindowOutline(_upperSpan, _lowerSpan, _height, _cornerRadius);
