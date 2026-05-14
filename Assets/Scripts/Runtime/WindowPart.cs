@@ -75,28 +75,16 @@ public class WindowPart : Part, IFuselageCarver
         _meshRenderer.sharedMaterial = PreviewMaterialFactory.GetWindowMaterial(this);
     }
 
-    public bool TryGetCutPlanes(FuselagePart target, out Plane[] planes)
+    public bool TryBuildCutPreviewData(FuselagePart target, out PreviewMeshData previewMeshData)
     {
-        planes = null;
+        previewMeshData = null;
         if(!FuselageCarverUtility.CanCarveTarget(this, target))
         {
             return false;
         }
 
-        planes = FuselageCarverUtility.BuildConvexPlanes(target.transform, transform, BuildOutline(), _depth);
-        return planes.Length > 0;
-    }
-
-    public bool TryGetCutMesh(FuselagePart target, out Mesh mesh)
-    {
-        mesh = null;
-        if(!FuselageCarverUtility.CanCarveTarget(this, target))
-        {
-            return false;
-        }
-
-        mesh = FuselageCarverUtility.BuildSolidCutMesh(BuildOutline(), _depth, "ProceduralWindowCut");
-        return mesh.vertexCount > 0;
+        previewMeshData = FuselageCarverUtility.BuildSolidCutPreviewData(BuildOutline(), _depth, "ProceduralWindowCut");
+        return previewMeshData != null && previewMeshData.Vertices.Count > 0;
     }
 
     private List<Vector2> BuildOutline()

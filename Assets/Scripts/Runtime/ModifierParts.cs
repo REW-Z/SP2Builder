@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -6,9 +5,7 @@ using UnityEngine;
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE1006:Naming Styles", Justification = "Keep short face labels local to preview cutter helpers.")]
 public interface IFuselageCarver
 {
-	bool TryGetCutMesh(FuselagePart target, out Mesh mesh);
-
-	bool TryGetCutPlanes(FuselagePart target, out Plane[] planes);
+	bool TryBuildCutPreviewData(FuselagePart target, out PreviewMeshData previewMeshData);
 }
 
 internal static class FuselageCarverUtility
@@ -57,10 +54,9 @@ internal static class FuselageCarverUtility
 		return mesh;
 	}
 
-	public static Mesh BuildSolidCutMesh(IReadOnlyList<Vector2> outline, float depth, string meshName)
+	public static PreviewMeshData BuildSolidCutPreviewData(IReadOnlyList<Vector2> outline, float depth, string meshName)
 	{
-		PreviewMeshData data = BuildExtrudedSolidMeshData(outline, depth, meshName);
-		return data.ToMesh();
+		return BuildExtrudedSolidMeshData(outline, depth, meshName);
 	}
 
 	public static bool CanCarveTarget(Part source, FuselagePart target)
@@ -71,47 +67,6 @@ internal static class FuselageCarverUtility
 		}
 
 		return source.HasExplicitTargets && source.ExplicitlyTargetsPart(target.PartId);
-	}
-
-	public static Plane[] BuildConvexPlanes(Transform targetTransform, Transform sourceTransform, IReadOnlyList<Vector2> outline, float depth)
-	{
-		if (targetTransform == null || sourceTransform == null || outline == null || outline.Count < 3)
-		{
-			return Array.Empty<Plane>();
-		}
-
-		float halfDepth = Mathf.Max(0.01f, depth) * 0.5f;
-		Vector3[] back = new Vector3[outline.Count];
-		Vector3[] front = new Vector3[outline.Count];
-		Vector3 insidePoint = Vector3.zero;
-		for (int i = 0; i < outline.Count; i++)
-		{
-			Vector3 backLocal = new Vector3(outline[i].x, outline[i].y, -halfDepth);
-			Vector3 frontLocal = new Vector3(outline[i].x, outline[i].y, halfDepth);
-			back[i] = targetTransform.InverseTransformPoint(sourceTransform.TransformPoint(backLocal));
-			front[i] = targetTransform.InverseTransformPoint(sourceTransform.TransformPoint(frontLocal));
-			insidePoint += back[i] + front[i];
-		}
-		insidePoint /= outline.Count * 2f;
-
-		List<Plane> planes = new List<Plane>(outline.Count + 2);
-		if (TryCreateLoopPlane(back, false, insidePoint, out Plane backPlane))
-		{
-			planes.Add(backPlane);
-		}
-		if (TryCreateLoopPlane(front, true, insidePoint, out Plane frontPlane))
-		{
-			planes.Add(frontPlane);
-		}
-		for (int i = 0; i < outline.Count; i++)
-		{
-			int next = (i + 1) % outline.Count;
-			if (TryCreateInwardFacingPlane(back[i], back[next], front[next], insidePoint, out Plane sidePlane))
-			{
-				planes.Add(sidePlane);
-			}
-		}
-		return planes.ToArray();
 	}
 
 	// 按原版 trapezoid window 语义构建圆角轮廓。 / Build the rounded outline for a trapezoid window using the original semantics.
@@ -325,50 +280,6 @@ internal static class FuselageCarverUtility
 		triangles.Add(a);
 		triangles.Add(b);
 		triangles.Add(c);
-	}
-
-	private static Plane CreateInwardFacingPlane(Vector3 a, Vector3 b, Vector3 c, Vector3 insidePoint)
-	{
-		Plane plane = new Plane(a, b, c);
-		if (plane.GetDistanceToPoint(insidePoint) > 0f)
-		{
-			plane = new Plane(-plane.normal, -plane.distance);
-		}
-		return plane;
-	}
-
-	private static bool TryCreateLoopPlane(IReadOnlyList<Vector3> loop, bool reverse, Vector3 insidePoint, out Plane plane)
-	{
-		plane = default;
-		if (loop == null || loop.Count < 3)
-		{
-			return false;
-		}
-
-		for (int a = 0; a < loop.Count - 2; a++)
-		{
-			for (int b = a + 1; b < loop.Count - 1; b++)
-			{
-				for (int c = b + 1; c < loop.Count; c++)
-				{
-					Vector3 p0 = loop[a];
-					Vector3 p1 = reverse ? loop[c] : loop[b];
-					Vector3 p2 = reverse ? loop[b] : loop[c];
-					if (TryCreateInwardFacingPlane(p0, p1, p2, insidePoint, out plane))
-					{
-						return true;
-					}
-				}
-			}
-		}
-
-		return false;
-	}
-
-	private static bool TryCreateInwardFacingPlane(Vector3 a, Vector3 b, Vector3 c, Vector3 insidePoint, out Plane plane)
-	{
-		plane = CreateInwardFacingPlane(a, b, c, insidePoint);
-		return plane.normal.sqrMagnitude > Epsilon * Epsilon;
 	}
 
 	private static Vector2 ComputePolygonCentroid(IReadOnlyList<Vector2> points)

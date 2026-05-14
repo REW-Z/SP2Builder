@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using SP2Builder.ManifoldRuntime;
 using UnityEngine;
 
 
@@ -423,23 +424,6 @@ internal static class FuselageGeometry
 		public Vector2 Tangent { get; }
 	}
 
-		// 默认启用前后两个端盖，构建完整 loft。 / Build a fully capped loft using both end caps by default.
-	public static Mesh BuildLoft(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow)
-	{
-		return BuildLoft(rear, front, offset, hollow, capRear: true, capFront: true);
-	}
-
-	// 构建完整机身 loft，包括外壁、可选内壁以及前后端盖。 / Build the full fuselage loft, including sidewalls, optional hollow inner walls, and selected end caps.
-	public static Mesh BuildLoft(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront)
-	{
-		return BuildLoft(rear, front, offset, hollow, capRear, capFront, applySectionCutting: true);
-	}
-
-	public static Mesh BuildLoft(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront, bool applySectionCutting)
-	{
-		return BuildLoftData(rear, front, offset, hollow, capRear, capFront, applySectionCutting).ToMesh();
-	}
-
 	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront)
 	{
 		return BuildLoftData(rear, front, offset, hollow, capRear, capFront, applySectionCutting: false);
@@ -447,12 +431,16 @@ internal static class FuselageGeometry
 
 	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront, bool applySectionCutting)
 	{
-		PreviewMeshData data = BuildRawLoftData(rear, front, offset, hollow, capRear, capFront);
-		if (applySectionCutting && TryBuildSectionCutPlanes(rear, front, offset, out Plane[] cutPlanes))
+		PreviewMeshData source = BuildRawLoftData(rear, front, offset, hollow, capRear, capFront);
+		if (source == null)
 		{
-			data = IntersectConvexVolume(data, cutPlanes, data.Name + "_Cut");
+			return null;
 		}
-		return data;
+
+		string meshName = string.IsNullOrWhiteSpace(source.Name)
+			? (hollow ? "FuselageHollow" : "FuselageBody")
+			: source.Name;
+		return FuselageManifoldUtility.BuildLoft(source, rear, front, offset, applySectionCutting, meshName);
 	}
 
 	private static PreviewMeshData BuildRawLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront)
@@ -480,8 +468,8 @@ internal static class FuselageGeometry
 			List<Vector2> outer = BuildSectionOutline(section, null, out outerTangents);
 			if (outer.Count < 3)
 			{
-				outer = BuildFallbackOutline(section);
-				outerTangents = BuildLoopTangents(outer);
+				Debug.LogError("Failed to build fuselage outer section outline for manifold loft.");
+				return null;
 			}
 			outerRings.Add(new RingProfile(outer, center, outerTangents));
 
@@ -493,7 +481,8 @@ internal static class FuselageGeometry
 			float insetDistance = Mathf.Lerp(rearInsetDistance, frontInsetDistance, t);
 			if (!TryBuildInnerOutline(outer, section, insetDistance, out List<Vector2> inner) || inner.Count < 3)
 			{
-				inner = BuildScaledInnerOutline(outer, section, insetDistance);
+				Debug.LogError("Failed to build fuselage inner section outline for manifold loft.");
+				return null;
 			}
 
 			innerRings!.Add(new RingProfile(inner, center, BuildLoopTangents(inner)));
@@ -566,18 +555,6 @@ internal static class FuselageGeometry
 		PreviewMeshData meshData = new PreviewMeshData(meshName, vertices, normals, triangles);
 
 		return meshData;
-	}
-
-	// 当裁切把曲线截面削得过多时，回退到简单梯形轮廓。 / Fall back to a plain trapezium outline when clipping removes too much of the curved profile.
-	private static List<Vector2> BuildFallbackOutline(FuselageSectionSettings section)
-	{
-		return EnsureClockwise(new List<Vector2>
-		{
-			ApplyTrapezium(new Vector2(1f, 1f), section),
-			ApplyTrapezium(new Vector2(1f, -1f), section),
-			ApplyTrapezium(new Vector2(-1f, -1f), section),
-			ApplyTrapezium(new Vector2(-1f, 1f), section)
-		});
 	}
 
 	// 当调用方不需要 cut-volume 裁切时，构建未裁切的截面轮廓。 / Build an unclipped section outline when the caller does not need cut-volume clipping.
@@ -755,27 +732,6 @@ internal static class FuselageGeometry
 	private static float ComputeThicknessInsetDistance(FuselageSectionSettings section)
 	{
 		return Mathf.Min(section.Width, section.Height) * 0.5f * Mathf.Clamp(section.Thickness, 0.01f, 0.99f);
-	}
-
-	private static List<Vector2> BuildScaledInnerOutline(List<Vector2> outer, FuselageSectionSettings section, float insetDistance)
-	{
-		List<Vector2> source = BuildCapLoopPoints(outer);
-		if (source.Count < 3)
-		{
-			source = outer;
-		}
-		bool[] sharpCornerFlags = BuildSharpCornerFlags(outer, source);
-
-		Vector2 center = ComputeAverage(source);
-		float halfMinSize = Mathf.Max(Epsilon, Mathf.Min(section.Width, section.Height) * 0.5f);
-		float scale = Mathf.Clamp01(1f - Mathf.Clamp(insetDistance / halfMinSize, 0.01f, 0.95f));
-		List<Vector2> inner = new List<Vector2>(source.Count);
-		for (int i = 0; i < source.Count; i++)
-		{
-			inner.Add(center + (source[i] - center) * scale);
-		}
-		inner = DuplicateSharpLoopPoints(inner, sharpCornerFlags);
-		return EnsureClockwise(inner);
 	}
 
 	// 尝试为 hollow 机身构建真实的内缩轮廓。 / Try to build a proper inset inner loop for hollow fuselages.
@@ -1929,7 +1885,11 @@ internal static class FuselageGeometry
 		List<Vector2> outline = BuildSectionOutline(section, null, out _);
 		if (outline == null || outline.Count < 3)
 		{
-			outline = BuildFallbackOutline(section);
+			return new ClipBounds(
+				center.x - section.Width * 0.5f,
+				center.y - section.Height * 0.5f,
+				center.x + section.Width * 0.5f,
+				center.y + section.Height * 0.5f);
 		}
 
 		float minX = float.PositiveInfinity;
@@ -1957,161 +1917,6 @@ internal static class FuselageGeometry
 		return new ClipBounds(minX, minY, maxX, maxY);
 	}
 
-	private static ClipBounds GetCutBounds(FuselageSectionSettings section, Vector2 center)
-	{
-		section.GetCuttingRange(out Float4Value minCutting, out Float4Value maxCutting);
-		float cutTop = section.GetCutEnabled(0) ? Mathf.Clamp(section.CutTop, minCutting.X, maxCutting.X) : minCutting.X;
-		float cutRight = section.GetCutEnabled(1) ? Mathf.Clamp(section.CutRight, minCutting.Y, maxCutting.Y) : minCutting.Y;
-		float cutBottom = section.GetCutEnabled(2) ? Mathf.Clamp(section.CutBottom, minCutting.Z, maxCutting.Z) : minCutting.Z;
-		float cutLeft = section.GetCutEnabled(3) ? Mathf.Clamp(section.CutLeft, minCutting.W, maxCutting.W) : minCutting.W;
-		float minX = center.x + (-0.5f + cutLeft) * section.Width;
-		float minY = center.y + (-0.5f + cutBottom) * section.Height;
-		float maxX = center.x + (0.5f - cutRight) * section.Width;
-		float maxY = center.y + (0.5f - cutTop) * section.Height;
-
-		if (minX >= maxX)
-		{
-			float midX = 0.5f * (minX + maxX);
-			minX = midX - Epsilon;
-			maxX = midX + Epsilon;
-		}
-		if (minY >= maxY)
-		{
-			float midY = 0.5f * (minY + maxY);
-			minY = midY - Epsilon;
-			maxY = midY + Epsilon;
-		}
-
-		return new ClipBounds(minX, minY, maxX, maxY);
-	}
-
-   // 根据前后两个截面的 cutting 参数构建真实 3D 切割体的四个侧面平面。 / Build the four side planes of the true 3D cutting volume from the rear and front section cutting parameters.
-	private static bool TryBuildSectionCutPlanes(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, out Plane[] planes)
-	{
-		planes = null;
-		if (!HasSectionCutting(rear) && !HasSectionCutting(front))
-		{
-			return false;
-		}
-
-		Vector2 rearCenter = -new Vector2(offset.x, offset.y) * 0.5f;
-		Vector2 frontCenter = new Vector2(offset.x, offset.y) * 0.5f;
-		ClipBounds rearBounds = GetCutBounds(rear, rearCenter);
-		ClipBounds frontBounds = GetCutBounds(front, frontCenter);
-		float rearZ = -offset.z * 0.5f;
-		float frontZ = offset.z * 0.5f;
-
-		Vector3[] vertices =
-		{
-			new Vector3(rearBounds.MaxX, rearBounds.MaxY, rearZ),
-			new Vector3(rearBounds.MaxX, rearBounds.MinY, rearZ),
-			new Vector3(rearBounds.MinX, rearBounds.MinY, rearZ),
-			new Vector3(rearBounds.MinX, rearBounds.MaxY, rearZ),
-			new Vector3(frontBounds.MaxX, frontBounds.MaxY, frontZ),
-			new Vector3(frontBounds.MaxX, frontBounds.MinY, frontZ),
-			new Vector3(frontBounds.MinX, frontBounds.MinY, frontZ),
-			new Vector3(frontBounds.MinX, frontBounds.MaxY, frontZ)
-		};
-
-		Vector3 insidePoint = Vector3.zero;
-		for (int i = 0; i < vertices.Length; i++)
-		{
-			insidePoint += vertices[i];
-		}
-		insidePoint /= vertices.Length;
-
-       List<Plane> cutPlanes = new List<Plane>(4);
-		if (rear.GetCutEnabled(1) || front.GetCutEnabled(1))
-		{
-			cutPlanes.Add(CreateInwardFacingPlane(vertices[0], vertices[4], vertices[5], insidePoint));
-		}
-		if (rear.GetCutEnabled(2) || front.GetCutEnabled(2))
-		{
-			cutPlanes.Add(CreateInwardFacingPlane(vertices[1], vertices[5], vertices[6], insidePoint));
-		}
-		if (rear.GetCutEnabled(3) || front.GetCutEnabled(3))
-		{
-			cutPlanes.Add(CreateInwardFacingPlane(vertices[2], vertices[6], vertices[7], insidePoint));
-		}
-		if (rear.GetCutEnabled(0) || front.GetCutEnabled(0))
-		{
-			cutPlanes.Add(CreateInwardFacingPlane(vertices[3], vertices[7], vertices[4], insidePoint));
-		}
-		planes = cutPlanes.ToArray();
-		return true;
-	}
-
-	// 生成一个朝向体积内部为负距离的平面，便于后续统一做 inside clipping。 / Create a plane whose interior evaluates to non-positive distance so inside clipping can use one consistent test.
-	private static Plane CreateInwardFacingPlane(Vector3 a, Vector3 b, Vector3 c, Vector3 insidePoint)
-	{
-		Plane plane = new Plane(a, b, c);
-		if (plane.GetDistanceToPoint(insidePoint) > 0f)
-		{
-			plane = new Plane(-plane.normal, -plane.distance);
-		}
-		return plane;
-	}
-
-	// 用凸切割体对网格做真正的保留式裁切，得到真实切口而不是截面挤压。 / Intersect a mesh with a convex keep-volume to produce a true cut instead of squeezing the section profile.
-	public static Mesh IntersectConvexVolume(Mesh source, Plane[] planes, string meshName)
-	{
-     if (source == null || planes == null || planes.Length == 0)
-		{
-			return source;
-		}
-
-		Mesh working = source;
-		for (int planeIndex = 0; planeIndex < planes.Length; planeIndex++)
-		{
-			// 按 keep-volume 的每个 inward-facing plane 逐次保留 negative side，并让 MeshPlaneSlicer 在每一步补 cap。 / Keep the negative side of each inward-facing plane in sequence and let MeshPlaneSlicer cap each cut.
-			Mesh next = MeshTools.MeshPlaneSlicer.Cut(working, planes[planeIndex], keepPositive: false, cap: true);
-			if (next == null)
-			{
-				break;
-			}
-
-			if (!ReferenceEquals(working, source) && !ReferenceEquals(next, working))
-			{
-				DestroyGeneratedMesh(working);
-			}
-
-			working = next;
-		}
-
-		if (!ReferenceEquals(working, source))
-		{
-			working.name = meshName;
-		}
-
-		return working;
-	}
-
-	public static PreviewMeshData IntersectConvexVolume(PreviewMeshData source, Plane[] planes, string meshName)
-	{
-     if (source == null || planes == null || planes.Length == 0)
-		{
-			return source;
-		}
-
-		PreviewMeshData working = source;
-		for (int planeIndex = 0; planeIndex < planes.Length; planeIndex++)
-		{
-			PreviewMeshData next = MeshTools.MeshPlaneSlicer.Cut(working, planes[planeIndex], keepPositive: false, cap: true);
-			if (next == null)
-			{
-				break;
-			}
-
-			working = next;
-		}
-
-		if (working != null)
-		{
-			working.Name = meshName;
-		}
-
-		return working;
-	}
 
 	// 统一销毁运行期生成的中间 Mesh，避免顺序切平面时堆积临时网格。 / Destroy intermediate runtime-generated meshes consistently so sequential plane slicing does not leak temporary meshes.
 	private static void DestroyGeneratedMesh(Mesh mesh)

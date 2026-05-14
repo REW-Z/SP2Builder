@@ -5,7 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Xml.Linq;
 using UnityEngine;
-using MeshTools;
+using SP2Builder.ManifoldRuntime;
 using UnityEditor;
 
 
@@ -124,8 +124,9 @@ public class FuselagePart : Part
         {
             hasTargetedCarvers = HasTargetedCarvers();
             hasSectionCutting = HasSectionCutting(_rearSection) || HasSectionCutting(_frontSection);
-            capRear = hasTargetedCarvers || !TryFindMatchingNeighbour(front: false, out _, out _);
-            capFront = hasTargetedCarvers || !TryFindMatchingNeighbour(front: true, out _, out _);
+			// 原版 JFuselage 的 FuselageJob body 路径默认首尾 fill，基础机身必须先是闭体再进 manifold。
+			capRear = true;
+			capFront = true;
             applyTargetedCarvers = hasTargetedCarvers;
             applySectionCutting = hasSectionCutting;
             rsTryUpdateExistingLoftMesh = TryUpdateExistingLoftMesh(capRear, capFront, applySectionCutting);
@@ -138,13 +139,12 @@ public class FuselagePart : Part
 			return;
 		}
 
-		Mesh previousMesh = _meshFilter.sharedMesh;
-       QueueMeshProcess(previousMesh, capRear, capFront, applySectionCutting, applyTargetedCarvers);
+		QueueMeshProcess(capRear, capFront, applySectionCutting, applyTargetedCarvers);
 		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
 	}
 
 	// 在后台构建 loft/boolean 所需的数据快照，并把计算丢给线程池。 / Snapshot the fuselage inputs for loft/boolean generation and dispatch the pure data work to the thread pool.
-	private void QueueMeshProcess(Mesh previousMesh, bool capRear, bool capFront, bool applySectionCutting, bool applyTargetedCarvers)
+	private void QueueMeshProcess(bool capRear, bool capFront, bool applySectionCutting, bool applyTargetedCarvers)
 	{
 		MeshProcessJob job = new MeshProcessJob
 		{
@@ -155,10 +155,9 @@ public class FuselagePart : Part
 			capFront = capFront,
 			applySectionCutting = applySectionCutting,
 			hollow = _visualStyle == FuselageVisualStyle.Hollow,
-			hasPreviousMesh = previousMesh != null && previousMesh.vertexCount > 0,
 			version = Interlocked.Increment(ref _meshProcessVersion),
 			worldMatrix = transform.localToWorldMatrix,
-			cutterMeshDataList = new List<MeshData>(),
+			cutterPreviewDataList = new List<PreviewMeshData>(),
 			cutterMeshMatrixList = new List<Matrix4x4>()
 		};
 
@@ -170,26 +169,27 @@ public class FuselagePart : Part
 		Task.Run(() => RunMeshProcess(job));
 	}
 
-	// 在主线程收集所有目标切割体的 MeshData 和矩阵快照。 / Collect MeshData and matrix snapshots for all targeted fuselage cutters on the main thread.
+	// 在主线程收集所有目标切割体的闭体 PreviewMeshData 和矩阵快照，避免把共享拓扑打散成 triangle soup。 / Collect closed PreviewMeshData and matrix snapshots for all targeted cutters on the main thread so shared topology survives manifold conversion.
 	private void CollectTargetedCarvers(MeshProcessJob job)
 	{
 		Craft craft = GetOwningCraft();
-		foreach (IFuselageCarver carver in craft.GetComponentsInChildren<MonoBehaviour>(includeInactive: true).OfType<IFuselageCarver>())
+		IEnumerable<Part> sortedCarvers = craft
+			.GetComponentsInChildren<Part>(includeInactive: true)
+			.Where(IsTargetedCarver)
+			.OrderBy(part => part.PartId);
+
+		foreach (Part behaviour in sortedCarvers)
 		{
-			if (ReferenceEquals(carver, this) || carver is not Component carverComponent)
+			IFuselageCarver carver = (IFuselageCarver)behaviour;
+			Component carverComponent = behaviour;
+
+			if (!carver.TryBuildCutPreviewData(this, out PreviewMeshData cutterPreview) || cutterPreview == null || cutterPreview.Vertices.Count == 0)
 			{
-				continue;
+				throw new InvalidOperationException($"Failed to build targeted cutter data for {carverComponent.name}.");
 			}
 
-			if (!carver.TryGetCutMesh(this, out Mesh cutterMesh) || cutterMesh == null || cutterMesh.vertexCount == 0)
-			{
-				DestroyOwnedObject(cutterMesh);
-				continue;
-			}
-
-			job.cutterMeshDataList.Add(MeshToolGeometry.ParseTriangles(cutterMesh, Matrix4x4.identity));
+			job.cutterPreviewDataList.Add(cutterPreview);
 			job.cutterMeshMatrixList.Add(carverComponent.transform.localToWorldMatrix);
-			DestroyOwnedObject(cutterMesh);
 		}
 	}
 
@@ -199,16 +199,12 @@ public class FuselagePart : Part
 		try
 		{
 			PreviewMeshData meshData = FuselageGeometry.BuildLoftData(job.rearSection, job.frontSection, job.offset, job.hollow, job.capRear, job.capFront, job.applySectionCutting);
-			if (job.cutterMeshDataList != null && job.cutterMeshDataList.Count > 0)
+			if (job.cutterPreviewDataList != null && job.cutterPreviewDataList.Count > 0)
 			{
 				meshData = ApplyTargetedCarvers(job, meshData);
 			}
 
 			job.resultMeshData = meshData;
-			if (meshData == null || meshData.Vertices.Count == 0)
-			{
-				job.fallbackMeshData = FuselageGeometry.BuildLoftData(job.rearSection, job.frontSection, job.offset, job.hollow, job.capRear, job.capFront, applySectionCutting: false);
-			}
 		}
 		catch (Exception exception)
 		{
@@ -231,17 +227,15 @@ public class FuselagePart : Part
 
 		PreviewMeshData carved = source;
 		string carvedMeshName = string.IsNullOrEmpty(source.Name) ? "FuselageCarved" : source.Name + "_Carved";
-		for (int i = 0; i < job.cutterMeshDataList.Count; i++)
+		for (int i = 0; i < job.cutterPreviewDataList.Count; i++)
 		{
-			PreviewMeshData next = MeshBoolean.Subtract(
-				carved,
-				Matrix4x4.identity,
-				ToPreviewMeshData(job.cutterMeshDataList[i], $"FuselageCutter_{i}"),
-				job.worldMatrix.inverse * job.cutterMeshMatrixList[i]);
+			PreviewMeshData cutter = job.cutterPreviewDataList[i];
+			Matrix4x4 cutterToTarget = job.worldMatrix.inverse * job.cutterMeshMatrixList[i];
+			PreviewMeshData next = FuselageManifoldUtility.Subtract(carved, cutter, cutterToTarget, carvedMeshName);
 
 			if (next == null)
 			{
-				continue;
+				return null;
 			}
 
 			next.Name = carvedMeshName;
@@ -249,19 +243,6 @@ public class FuselagePart : Part
 		}
 
 		return carved;
-	}
-
-	// 把 MeshData 轻量转换成 PreviewMeshData，供后台布尔路径复用。 / Convert MeshData into PreviewMeshData so the background boolean path can reuse preview builders.
-    private static PreviewMeshData ToPreviewMeshData(MeshTools.MeshData meshData, string meshName)
-	{
-		MeshBuilder builder = new MeshBuilder(meshData.Attributes, meshData.SubMeshCount);
-		for (int i = 0; i < meshData.Triangles.Count; i++)
-		{
-			Triangle triangle = meshData.Triangles[i];
-			builder.AddTriangle(triangle.A, triangle.B, triangle.C, triangle.SubMesh);
-		}
-
-		return builder.ToPreviewMeshData(meshName);
 	}
 
 	// 在主线程消费后台任务结果并回填 sharedMesh。 / Consume completed background jobs on the main thread and assign the resulting sharedMesh.
@@ -283,6 +264,7 @@ public class FuselagePart : Part
 		if (job.error != null)
 		{
 			Debug.LogException(job.error, this);
+			ClearPreviewMesh();
 			return;
 		}
 
@@ -290,19 +272,7 @@ public class FuselagePart : Part
 		PreviewMeshData meshData = job.resultMeshData;
 		if (meshData == null || meshData.Vertices.Count == 0)
 		{
-			if (!job.hasPreviousMesh)
-			{
-				meshData = job.fallbackMeshData;
-			}
-			else
-			{
-				_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
-				return;
-			}
-		}
-
-		if (meshData == null || meshData.Vertices.Count == 0)
-		{
+			ClearPreviewMesh();
 			return;
 		}
 
@@ -312,6 +282,22 @@ public class FuselagePart : Part
 		if (previousMesh != null && !ReferenceEquals(previousMesh, mesh))
 		{
 			DestroyOwnedObject(previousMesh);
+		}
+		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
+	}
+
+	private void ClearPreviewMesh()
+	{
+		if (_meshFilter == null)
+		{
+			return;
+		}
+
+		Mesh mesh = _meshFilter.sharedMesh;
+		_meshFilter.sharedMesh = null;
+		if (mesh != null)
+		{
+			DestroyOwnedObject(mesh);
 		}
 		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
 	}
@@ -330,6 +316,11 @@ public class FuselagePart : Part
 		}
 
 		PreviewMeshData meshData = FuselageGeometry.BuildLoftData(_rearSection, _frontSection, _offset, _visualStyle == FuselageVisualStyle.Hollow, capRear, capFront);
+		if (meshData == null || meshData.Vertices.Count == 0)
+		{
+			return false;
+		}
+
 		if (meshData.Vertices.Count != mesh.vertexCount || meshData.Normals.Count != mesh.vertexCount || meshData.SubMeshTriangles.Count != mesh.subMeshCount)
 		{
 			return false;
@@ -372,18 +363,24 @@ public class FuselagePart : Part
 		Craft craft = GetOwningCraft();
 		foreach (Part part in craft.GetComponentsInChildren<Part>(includeInactive: true))
 		{
-			if (part == this || part is not IFuselageCarver)
+			if (!IsTargetedCarver(part))
 			{
 				continue;
 			}
 
-			if (part.HasExplicitTargets && part.ExplicitlyTargetsPart(PartId))
-			{
-				return true;
-			}
+			return true;
 		}
 
 		return false;
+	}
+
+	private bool IsTargetedCarver(Part part)
+	{
+		return part != null
+			&& part != this
+			&& part is IFuselageCarver
+			&& part.HasExplicitTargets
+			&& part.ExplicitlyTargetsPart(PartId);
 	}
 
 	// 在编辑器首次排队重建前，先补齐未序列化的截面派生状态。 / Normalize nonserialized section state before the editor schedules an initial rebuild.

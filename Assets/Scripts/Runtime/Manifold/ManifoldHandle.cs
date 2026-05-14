@@ -1,0 +1,164 @@
+using System;
+using System.Runtime.InteropServices;
+using UnityEngine;
+
+namespace SP2Builder.ManifoldRuntime
+{
+	internal sealed class ManifoldHandle : IDisposable
+	{
+		private IntPtr _ptr;
+
+		public IntPtr Ptr => _ptr;
+
+		public bool IsEmpty => _ptr == IntPtr.Zero || ManifoldNativeMethods.manifold_is_empty(_ptr) != 0;
+
+		public ManifoldError Status => _ptr == IntPtr.Zero ? ManifoldError.INVALID_CONSTRUCTION : ManifoldNativeMethods.manifold_status(_ptr);
+
+		public double Volume => _ptr == IntPtr.Zero ? 0d : ManifoldNativeMethods.manifold_volume(_ptr);
+
+		private ManifoldHandle(IntPtr ptr)
+		{
+			_ptr = ptr;
+		}
+
+		public static ManifoldHandle Create(PreviewMeshData meshData, out ManifoldError status)
+		{
+			status = ManifoldError.INVALID_CONSTRUCTION;
+			if (!ManifoldRuntimeAvailability.IsAvailable)
+			{
+				return null;
+			}
+
+			using ManifoldMeshHandle meshGl = ManifoldMeshHandle.Create(meshData);
+			if (meshGl == null)
+			{
+				return null;
+			}
+
+			IntPtr storage = Marshal.AllocHGlobal((int)ManifoldNativeMethods.manifold_manifold_size());
+			try
+			{
+				IntPtr ptr = ManifoldNativeMethods.manifold_of_meshgl(storage, meshGl.Ptr);
+				if (ptr == IntPtr.Zero)
+				{
+					Marshal.FreeHGlobal(storage);
+					return null;
+				}
+
+				ManifoldHandle handle = new ManifoldHandle(ptr);
+				status = handle.Status;
+				return handle;
+			}
+			catch
+			{
+				Marshal.FreeHGlobal(storage);
+				throw;
+			}
+		}
+
+		public ManifoldHandle Copy()
+		{
+			return CreateFromNative(storage => ManifoldNativeMethods.manifold_copy(storage, _ptr));
+		}
+
+		public ManifoldHandle Transform(Matrix4x4 matrix)
+		{
+			Vector4 c0 = matrix.GetColumn(0);
+			Vector4 c1 = matrix.GetColumn(1);
+			Vector4 c2 = matrix.GetColumn(2);
+			Vector4 c3 = matrix.GetColumn(3);
+			return CreateFromNative(storage => ManifoldNativeMethods.manifold_transform(
+				storage,
+				_ptr,
+				c0.x,
+				c0.y,
+				c0.z,
+				c1.x,
+				c1.y,
+				c1.z,
+				c2.x,
+				c2.y,
+				c2.z,
+				c3.x,
+				c3.y,
+				c3.z));
+		}
+
+		public ManifoldHandle Subtract(ManifoldHandle other)
+		{
+			return Boolean(other, ManifoldOpType.SUBTRACT);
+		}
+
+		public ManifoldHandle Intersect(ManifoldHandle other)
+		{
+			return Boolean(other, ManifoldOpType.INTERSECT);
+		}
+
+		public Bounds BoundingBox()
+		{
+			NativeBox box = default;
+			if (_ptr == IntPtr.Zero)
+			{
+				return default;
+			}
+
+			ManifoldNativeMethods.manifold_bounding_box(ref box, _ptr);
+			Vector3 min = new Vector3((float)box.min.x, (float)box.min.y, (float)box.min.z);
+			Vector3 max = new Vector3((float)box.max.x, (float)box.max.y, (float)box.max.z);
+			return new Bounds((min + max) * 0.5f, max - min);
+		}
+
+		public PreviewMeshData ToPreviewMeshData(string meshName)
+		{
+			return ManifoldPreviewMeshUtility.ToPreviewMeshData(this, meshName);
+		}
+
+		public void Dispose()
+		{
+			if (_ptr == IntPtr.Zero)
+			{
+				return;
+			}
+
+			ManifoldNativeMethods.manifold_destruct_manifold(_ptr);
+			Marshal.FreeHGlobal(_ptr);
+			_ptr = IntPtr.Zero;
+		}
+
+		private ManifoldHandle Boolean(ManifoldHandle other, ManifoldOpType operation)
+		{
+			if (_ptr == IntPtr.Zero || other == null || other._ptr == IntPtr.Zero)
+			{
+				return null;
+			}
+
+			return CreateFromNative(storage => ManifoldNativeMethods.manifold_boolean(storage, _ptr, other._ptr, operation));
+		}
+
+		private static ManifoldHandle CreateFromNative(Func<IntPtr, IntPtr> factory)
+		{
+			if (!ManifoldRuntimeAvailability.IsAvailable)
+			{
+				return null;
+			}
+
+			IntPtr storage = Marshal.AllocHGlobal((int)ManifoldNativeMethods.manifold_manifold_size());
+			try
+			{
+				IntPtr ptr = factory(storage);
+				if (ptr == IntPtr.Zero)
+				{
+					Marshal.FreeHGlobal(storage);
+					return null;
+				}
+
+				return new ManifoldHandle(ptr);
+			}
+			catch
+			{
+				Marshal.FreeHGlobal(storage);
+				throw;
+			}
+		}
+	}
+}

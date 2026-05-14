@@ -78,28 +78,16 @@ public class BayPart : Part, IFuselageCarver
         _meshRenderer.sharedMaterial = PreviewMaterialFactory.GetBayMaterial(this);
     }
 
-    public bool TryGetCutPlanes(FuselagePart target, out Plane[] planes)
+    public bool TryBuildCutPreviewData(FuselagePart target, out PreviewMeshData previewMeshData)
     {
-        planes = null;
+        previewMeshData = null;
         if(!FuselageCarverUtility.CanCarveTarget(this, target))
         {
             return false;
         }
 
-        planes = FuselageCarverUtility.BuildConvexPlanes(target.transform, transform, BuildOutline(), GetCutDepth());
-        return planes.Length > 0;
-    }
-
-    public bool TryGetCutMesh(FuselagePart target, out Mesh mesh)
-    {
-        mesh = null;
-        if(!FuselageCarverUtility.CanCarveTarget(this, target))
-        {
-            return false;
-        }
-
-        mesh = FuselageCarverUtility.BuildSolidCutMesh(BuildOutline(), GetCutDepth(), "ProceduralBayCut");
-        return mesh.vertexCount > 0;
+        previewMeshData = FuselageCarverUtility.BuildSolidCutPreviewData(BuildOutline(), GetCutDepth(), "ProceduralBayCut");
+        return previewMeshData != null && previewMeshData.Vertices.Count > 0;
     }
 
     private List<Vector2> BuildOutline()
