@@ -401,10 +401,6 @@ public class Craft : MonoBehaviour
 		}
 
 		source.EnsureConnectionIds(AllocateConnectionId());
-		HashSet<int> activeConnectionIds = source.ConnectionEndpoints
-			.Where(endpoint => endpoint.ConnectionId > 0)
-			.Select(endpoint => endpoint.ConnectionId)
-			.ToHashSet();
 
 		foreach (Part part in GetComponentsInChildren<Part>(includeInactive: true))
 		{
@@ -413,7 +409,11 @@ public class Craft : MonoBehaviour
 				continue;
 			}
 
-			part.RemoveStaleReciprocalConnections(source.PartId, activeConnectionIds);
+			List<PartConnectionEndpoint> expectedReciprocals = source.ConnectionEndpoints
+				.Where(endpoint => endpoint.ConnectionId > 0 && endpoint.ConnectedPartId == part.PartId)
+				.Select(endpoint => endpoint.CreateReciprocal(source.PartId))
+				.ToList();
+			part.RemoveStaleReciprocalConnections(source.PartId, expectedReciprocals);
 		}
 
 		foreach (PartConnectionEndpoint endpoint in source.ConnectionEndpoints)

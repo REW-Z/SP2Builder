@@ -365,7 +365,7 @@ public abstract class Part : MonoBehaviour
 		for (int i = 0; i < _connectionEndpoints.Count; i++)
 		{
 			PartConnectionEndpoint existing = _connectionEndpoints[i];
-			if (existing.ConnectionId != reciprocal.ConnectionId)
+			if (!ConnectionEndpointsMatch(existing, reciprocal))
 			{
 				continue;
 			}
@@ -381,7 +381,7 @@ public abstract class Part : MonoBehaviour
 	}
 
 	// 删除指向指定 source part 的过期 reciprocal 端点。 / Remove stale reciprocal endpoints that point back to the specified source part.
-	public void RemoveStaleReciprocalConnections(int connectedPartId, HashSet<int> activeConnectionIds)
+	public void RemoveStaleReciprocalConnections(int connectedPartId, IReadOnlyCollection<PartConnectionEndpoint> expectedReciprocals)
 	{
 		for (int i = _connectionEndpoints.Count - 1; i >= 0; i--)
 		{
@@ -391,11 +391,41 @@ public abstract class Part : MonoBehaviour
 				continue;
 			}
 
-			if (endpoint.ConnectionId <= 0 || activeConnectionIds == null || !activeConnectionIds.Contains(endpoint.ConnectionId))
+			bool matched = false;
+			if (expectedReciprocals != null)
+			{
+				foreach (PartConnectionEndpoint expected in expectedReciprocals)
+				{
+					if (!ConnectionEndpointsMatch(endpoint, expected))
+					{
+						continue;
+					}
+
+					matched = true;
+					break;
+				}
+			}
+
+			if (!matched)
 			{
 				_connectionEndpoints.RemoveAt(i);
 			}
 		}
+	}
+
+	// 用完整端点身份比较两条连接记录，避免把同一 ConnectionId 下的多 attachpoint 对错误折叠成一条。 / Compare the full endpoint identity so multiple attach-point pairs under one ConnectionId are not collapsed into a single record.
+	private static bool ConnectionEndpointsMatch(PartConnectionEndpoint a, PartConnectionEndpoint b)
+	{
+		if (a == null || b == null)
+		{
+			return false;
+		}
+
+		return a.ConnectionId == b.ConnectionId
+			&& a.IsPartAEndpoint == b.IsPartAEndpoint
+			&& a.LocalAttachPointId == b.LocalAttachPointId
+			&& a.ConnectedPartId == b.ConnectedPartId
+			&& a.ConnectedAttachPointId == b.ConnectedAttachPointId;
 	}
 
 	// 为缺少 id 的端点分配连续且唯一的连接 id。 / Assign sequential unique connection ids to endpoints that do not have one yet.
