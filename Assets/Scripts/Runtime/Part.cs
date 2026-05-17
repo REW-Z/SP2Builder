@@ -310,6 +310,12 @@ public abstract class Part : MonoBehaviour
 		_stateXmlDirty = true;
 	}
 
+	// 更新 Part 的逻辑类型字符串，供导出 XML 和编辑器名称复用。 / Update the part type string used by XML export and editor naming.
+	protected void SetPartType(string partType)
+	{
+		_partType = partType ?? string.Empty;
+	}
+
 	// 按索引删除一个连接端点。 / Remove one connection endpoint by index.
 	public void RemoveConnectionEndpointAt(int index)
 	{
@@ -319,6 +325,18 @@ public abstract class Part : MonoBehaviour
 		}
 
 		_connectionEndpoints.RemoveAt(index);
+	}
+
+	// 删除占用指定本地 attach point 的所有连接端点。 / Remove all connection endpoints that occupy the specified local attach point.
+	public void RemoveConnectionEndpointsForLocalAttachPoint(int localAttachPointId)
+	{
+		for (int i = _connectionEndpoints.Count - 1; i >= 0; i--)
+		{
+			if (_connectionEndpoints[i].LocalAttachPointId == localAttachPointId)
+			{
+				_connectionEndpoints.RemoveAt(i);
+			}
+		}
 	}
 
 	// 按端点里的 connectedPartId 解析出对端零件。 / Resolve the connected part referenced by an endpoint.
@@ -725,207 +743,3 @@ public abstract class Part : MonoBehaviour
 	}
 }
 
-[ExecuteAlways]
-public class OtherPart : Part
-{
-	private const float GizmoRadius = 0.24f;
-
-	// 普通零件不生成渲染网格，只保留 Gizmos 线框占位。 / Generic parts do not create render meshes; they only draw a lightweight Gizmos placeholder.
-	public override void RefreshPreview()
-	{
-		base.RefreshPreview();
-		RemoveRenderPreview();
-	}
-
-	// 为普通零件绘制轻量的球形占位 Gizmo。 / Draw a lightweight spherical placeholder gizmo for generic parts.
-	private void OnDrawGizmos()
-	{
-		Event currentEvent = Event.current;
-		if (currentEvent != null && currentEvent.type != EventType.Repaint)
-		{
-			return;
-		}
-		Gizmos.color = new Color(0.65f, 0.75f, 0.95f, 0.75f);
-		Matrix4x4 oldMatrix = Gizmos.matrix;
-		Gizmos.matrix = transform.localToWorldMatrix;
-		Gizmos.DrawWireSphere(Vector3.zero, GizmoRadius);
-		Gizmos.matrix = oldMatrix;
-	}
-
-	// 保留基类的连接可视化绘制。 / Keep the base connection visualization when the generic part is selected.
-	protected override void OnDrawGizmosSelected()
-	{
-		base.OnDrawGizmosSelected();
-	}
-
-	// 移除挂在 OtherPart 上的临时渲染预览组件。 / Remove transient render preview components attached to OtherPart.
-	private void RemoveRenderPreview()
-	{
-		MeshFilter meshFilter = GetComponent<MeshFilter>();
-		if (meshFilter != null)
-		{
-			if (meshFilter.sharedMesh != null)
-			{
-				DestroyOwnedObject(meshFilter.sharedMesh);
-			}
-			DestroyOwnedObject(meshFilter);
-		}
-
-		MeshRenderer meshRenderer = GetComponent<MeshRenderer>();
-		if (meshRenderer != null)
-		{
-			DestroyOwnedObject(meshRenderer);
-		}
-	}
-}
-
-[ExecuteAlways]
-public class LabelState : MonoBehaviour, IPartXmlExtension
-{
-	[SerializeField, TextArea(2, 6)]
-	private string _rawStateXml;
-
-	[SerializeField]
-	private string _designText = "Text";
-
-	[SerializeField]
-	private float _fontSize = 1f;
-
-	[SerializeField]
-	private float _width = 1f;
-
-	[SerializeField]
-	private float _height = 0.5f;
-
-	[SerializeField]
-	private Vector3 _offset = new Vector3(0f, 0.006f, 0f);
-
-	[SerializeField]
-	private Vector3 _rotation = new Vector3(90f, 0f, 0f);
-
-	private GameObject _labelObject;
-
-	private TextMesh _textMesh;
-
-	private bool _previewRefreshQueued;
-
-	// 从所属 Part XML 中读取标签文本与摆放数据。 / Read label text and placement data from the owning part XML.
-	public void InitializeFromPartElement(XElement partElement)
-	{
-		XElement stateElement = partElement.Element("Label.State");
-		if (stateElement == null)
-		{
-			return;
-		}
-
-		_rawStateXml = stateElement.ToString(SaveOptions.DisableFormatting);
-		_designText = (string)stateElement.Attribute("designText") ?? _designText;
-		_fontSize = XmlUtil.ParseFloat((string)stateElement.Attribute("fontSize"), _fontSize);
-		_width = XmlUtil.ParseFloat((string)stateElement.Attribute("width"), _width);
-		_height = XmlUtil.ParseFloat((string)stateElement.Attribute("height"), _height);
-		_offset = XmlUtil.ParseVector3((string)stateElement.Attribute("offset"), _offset);
-		_rotation = XmlUtil.ParseVector3((string)stateElement.Attribute("rotation"), _rotation);
-		RefreshPreview();
-	}
-
-	// 把标签文本与摆放数据写回所属 Part XML。 / Write label text and placement data back into the owning part XML.
-	public void WriteToPartElement(XElement partElement)
-	{
-		if (string.IsNullOrWhiteSpace(_rawStateXml) && string.IsNullOrWhiteSpace(_designText))
-		{
-			return;
-		}
-
-		XmlUtil.RemoveChildren(partElement, "Label.State");
-		XElement stateElement = string.IsNullOrWhiteSpace(_rawStateXml) ? new XElement("Label.State") : XElement.Parse(_rawStateXml);
-		stateElement.SetAttributeValue("designText", _designText ?? string.Empty);
-		stateElement.SetAttributeValue("fontSize", XmlUtil.FormatFloat(_fontSize));
-		stateElement.SetAttributeValue("width", XmlUtil.FormatFloat(_width));
-		stateElement.SetAttributeValue("height", XmlUtil.FormatFloat(_height));
-		stateElement.SetAttributeValue("offset", XmlUtil.FormatVector3(_offset));
-		stateElement.SetAttributeValue("rotation", XmlUtil.FormatVector3(_rotation));
-		partElement.Add(stateElement);
-	}
-
-	// 刷新场景里的文字标签预览。 / Refresh the in-scene text preview that represents the label extension.
-	public void RefreshPreview()
-	{
-		EnsurePreviewObject();
-		_labelObject.transform.localPosition = _offset;
-		_labelObject.transform.localRotation = Quaternion.Euler(_rotation);
-		_textMesh.text = _designText;
-		_textMesh.characterSize = Mathf.Max(0.01f, _fontSize * 0.08f);
-		_textMesh.anchor = TextAnchor.MiddleCenter;
-		_textMesh.alignment = TextAlignment.Center;
-		_textMesh.color = PreviewMaterialFactory.GetLabelMaterial().color;
-		_labelObject.transform.localScale = new Vector3(Mathf.Max(0.05f, _width), Mathf.Max(0.05f, _height), 1f);
-	}
-
-	// 创建或找回用于渲染标签预览的 TextMesh 对象。 / Create or recover the TextMesh object used to render the label preview.
-	private void EnsurePreviewObject()
-	{
-		if (_labelObject != null && _textMesh != null)
-		{
-			return;
-		}
-
-		Transform existing = transform.Find("LabelPreview");
-		if (existing != null)
-		{
-			_labelObject = existing.gameObject;
-			_textMesh = _labelObject.GetComponent<TextMesh>();
-		}
-		if (_labelObject == null)
-		{
-			_labelObject = new GameObject("LabelPreview");
-			_labelObject.transform.SetParent(transform, false);
-		}
-
-		if (_textMesh == null)
-		{
-			_textMesh = _labelObject.GetComponent<TextMesh>();
-			if (_textMesh == null)
-			{
-				_textMesh = _labelObject.AddComponent<TextMesh>();
-			}
-		}
-
-		MeshRenderer renderer = _labelObject.GetComponent<MeshRenderer>();
-		if (renderer != null)
-		{
-			renderer.sharedMaterial = PreviewMaterialFactory.GetLabelMaterial();
-		}
-	}
-
-	// 当编辑器中的序列化字段变化时排队刷新标签预览。 / Queue label preview updates when serialized properties change in the editor.
-	private void OnValidate()
-	{
-		QueuePreviewRefresh();
-	}
-
-	// 在编辑器中合并多次标签预览刷新请求。 / Coalesce label preview updates in the editor.
-	private void QueuePreviewRefresh()
-	{
-		if (_previewRefreshQueued)
-		{
-			return;
-		}
-
-		_previewRefreshQueued = true;
-		EditorApplication.delayCall += DelayedRefreshPreview;
-	}
-
-	// 在编辑器空闲时执行延迟的标签预览刷新。 / Execute the queued label preview refresh once the editor is idle.
-	private void DelayedRefreshPreview()
-	{
-		EditorApplication.delayCall -= DelayedRefreshPreview;
-		_previewRefreshQueued = false;
-
-		if (this == null || gameObject == null)
-		{
-			return;
-		}
-
-		RefreshPreview();
-	}
-}

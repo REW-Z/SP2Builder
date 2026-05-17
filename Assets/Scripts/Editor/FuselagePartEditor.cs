@@ -22,6 +22,16 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 	private static readonly string[] ValueComponentNames = { "X", "Y", "Z", "W" };
 
+	private const float AutoConnectMaxDistance = 30f;
+
+	private const float AutoConnectMaxDistanceSqr = AutoConnectMaxDistance * AutoConnectMaxDistance;
+
+	private const string AutoConnectSelectedMenuPath = "Tools/SP2 Craft Editor/Fuselage/Auto Connect Selected #t";
+
+	private const string SnapSelectedRearMenuPath = "Tools/SP2 Craft Editor/Fuselage/Snap Selected Rear #q";
+
+	private const string SnapSelectedFrontMenuPath = "Tools/SP2 Craft Editor/Fuselage/Snap Selected Front #e";
+
 	private bool _showRearSection = true;
 
 	private bool _showFrontSection = true;
@@ -40,6 +50,11 @@ public class FuselagePartEditor : UnityEditor.Editor
 		EditorGUI.BeginChangeCheck();
 		EditorGUILayout.PropertyField(serializedObject.FindProperty("_serializationMode"));
 		EditorGUILayout.PropertyField(serializedObject.FindProperty("_visualStyle"));
+		SerializedProperty visualStyleProperty = serializedObject.FindProperty("_visualStyle");
+		if (visualStyleProperty.enumValueIndex == (int)FuselageVisualStyle.Cone || visualStyleProperty.enumValueIndex == (int)FuselageVisualStyle.HollowCone)
+		{
+			EditorGUILayout.Slider(serializedObject.FindProperty("_noseconeRoundness"), 0f, 1f);
+		}
 		EditorGUILayout.PropertyField(serializedObject.FindProperty("_glass"));
 		EditorGUILayout.PropertyField(serializedObject.FindProperty("_offset"), new GUIContent("Length / Rise / Run"));
 
@@ -83,38 +98,197 @@ public class FuselagePartEditor : UnityEditor.Editor
 			SceneView.RepaintAll();
 		}
 
-		DrawSnapButtons(fuselage);
+		DrawCopySectionButtons(fuselage);
 		PartInspectorUtility.DrawPartActions(fuselage);
 		PartConnectionEditorUtility.DrawConnectionEditor(fuselage);
 	}
 
-	private static void DrawSnapButtons(FuselagePart fuselage)
+	// 绘制前后端面的截面复制按钮。 / Draw the section-copy buttons for the front and rear fuselage ends.
+	private static void DrawCopySectionButtons(FuselagePart fuselage)
 	{
 		EditorGUILayout.Space(8f);
-		EditorGUILayout.LabelField("Fuselage Snap", EditorStyles.boldLabel);
+		EditorGUILayout.LabelField("Fuselage Section Tools", EditorStyles.boldLabel);
 		EditorGUILayout.BeginHorizontal();
-		if (GUILayout.Button("Snap Rear To Connected", GUILayout.Height(24f)))
+		if (GUILayout.Button("CopySectionRear", GUILayout.Height(24f)))
 		{
-			SnapEnd(fuselage, front: false);
+			CopyConnectedSection(fuselage, front: false);
 		}
-		if (GUILayout.Button("Snap Front To Connected", GUILayout.Height(24f)))
+		if (GUILayout.Button("CopySectionFront", GUILayout.Height(24f)))
 		{
-			SnapEnd(fuselage, front: true);
+			CopyConnectedSection(fuselage, front: true);
 		}
 		EditorGUILayout.EndHorizontal();
 	}
 
-	private static void SnapEnd(FuselagePart fuselage, bool front)
+	// 从相连机身复制前/后端截面，并立即重建预览。 / Copy the connected front or rear section and rebuild the preview immediately.
+	private static void CopyConnectedSection(FuselagePart fuselage, bool front)
 	{
-		Undo.RecordObject(fuselage.transform, front ? "Snap Fuselage Front" : "Snap Fuselage Rear");
-		if (!fuselage.SnapEndToConnected(front))
+		if (fuselage == null)
 		{
 			return;
 		}
 
+		Undo.RecordObject(fuselage, front ? "Copy Fuselage Front Section" : "Copy Fuselage Rear Section");
+		if (!fuselage.TryCopyConnectedSection(front))
+		{
+			Debug.LogWarning(front
+				? "Failed to copy the connected front fuselage section."
+				: "Failed to copy the connected rear fuselage section.", fuselage);
+			return;
+		}
+
 		Craft craft = fuselage.GetComponentInParent<Craft>();
-		craft.RebuildPreviewForPart(fuselage);
+		if (craft != null)
+		{
+			EditorUtility.SetDirty(craft);
+			craft.RebuildPreviewForPart(fuselage, lightweight: false);
+		}
+
 		EditorUtility.SetDirty(fuselage);
+		EditorApplication.QueuePlayerLoopUpdate();
+		SceneView.RepaintAll();
+	}
+
+	// 将当前机身的前/后端吸附到已连接机身的对应端面。 / Snap the current fuselage front or rear end onto its connected neighbor.
+	private static void SnapEnd(FuselagePart fuselage, bool front)
+	{
+		if (fuselage == null)
+		{
+			return;
+		}
+
+		Undo.RecordObject(fuselage.transform, front ? "Snap Fuselage Front" : "Snap Fuselage Rear");
+		if (!fuselage.SnapEndToConnected(front))
+		{
+			Debug.LogWarning(front
+				? "Failed to snap the fuselage front because no connected fuselage end was found."
+				: "Failed to snap the fuselage rear because no connected fuselage end was found.", fuselage);
+			return;
+		}
+
+		Craft craft = fuselage.GetComponentInParent<Craft>();
+		if (craft != null)
+		{
+			EditorUtility.SetDirty(craft);
+			craft.RebuildPreviewForPart(fuselage);
+		}
+
+		EditorUtility.SetDirty(fuselage);
+		EditorApplication.QueuePlayerLoopUpdate();
+		SceneView.RepaintAll();
+	}
+
+	[MenuItem(AutoConnectSelectedMenuPath)]
+	// 对同时选中的两段机身按最近的前后端自动创建连接。 / Auto-create a connection between the nearest front/rear ends of the two selected fuselages.
+	private static void AutoConnectSelectedFuselages()
+	{
+		if (!TryGetSelectedFuselagePair(out FuselagePart first, out FuselagePart second, out Craft craft))
+		{
+			return;
+		}
+
+		float rearToFrontDistance = (first.GetAttachPointWorldPosition(0) - second.GetAttachPointWorldPosition(1)).sqrMagnitude;
+		float frontToRearDistance = (first.GetAttachPointWorldPosition(1) - second.GetAttachPointWorldPosition(0)).sqrMagnitude;
+		bool connectRearToFront = rearToFrontDistance <= frontToRearDistance;
+		int firstAttachPointId = connectRearToFront ? 0 : 1;
+		int secondAttachPointId = connectRearToFront ? 1 : 0;
+		float bestDistance = connectRearToFront ? rearToFrontDistance : frontToRearDistance;
+
+		if (bestDistance > AutoConnectMaxDistanceSqr)
+		{
+			Debug.LogWarning("Selected fuselages are not close enough to auto-connect.", craft);
+			return;
+		}
+
+		ConnectFuselageEnds(craft, first, firstAttachPointId, second, secondAttachPointId);
+	}
+
+	[MenuItem(AutoConnectSelectedMenuPath, true)]
+	private static bool ValidateAutoConnectSelectedFuselages()
+	{
+		return TryGetSelectedFuselagePair(out _, out _, out _);
+	}
+
+	[MenuItem(SnapSelectedRearMenuPath)]
+	// 对当前选中的机身执行 Rear 端吸附。 / Snap the rear end of the currently selected fuselage.
+	private static void SnapSelectedRear()
+	{
+		if (TryGetSingleSelectedFuselage(out FuselagePart fuselage))
+		{
+			SnapEnd(fuselage, front: false);
+		}
+	}
+
+	[MenuItem(SnapSelectedRearMenuPath, true)]
+	private static bool ValidateSnapSelectedRear()
+	{
+		return TryGetSingleSelectedFuselage(out _);
+	}
+
+	[MenuItem(SnapSelectedFrontMenuPath)]
+	// 对当前选中的机身执行 Front 端吸附。 / Snap the front end of the currently selected fuselage.
+	private static void SnapSelectedFront()
+	{
+		if (TryGetSingleSelectedFuselage(out FuselagePart fuselage))
+		{
+			SnapEnd(fuselage, front: true);
+		}
+	}
+
+	[MenuItem(SnapSelectedFrontMenuPath, true)]
+	private static bool ValidateSnapSelectedFront()
+	{
+		return TryGetSingleSelectedFuselage(out _);
+	}
+
+	// 读取当前是否只选中了一个可编辑机身。 / Check whether the current selection contains exactly one editable fuselage.
+	private static bool TryGetSingleSelectedFuselage(out FuselagePart fuselage)
+	{
+		FuselagePart[] selected = Selection.GetFiltered<FuselagePart>(SelectionMode.Editable | SelectionMode.ExcludePrefab | SelectionMode.TopLevel);
+		fuselage = selected.Length == 1 ? selected[0] : null;
+		return fuselage != null;
+	}
+
+	// 读取当前是否选中了同一 Craft 下的两个机身。 / Check whether the current selection contains two fuselages under the same craft.
+	private static bool TryGetSelectedFuselagePair(out FuselagePart first, out FuselagePart second, out Craft craft)
+	{
+		FuselagePart[] selected = Selection.GetFiltered<FuselagePart>(SelectionMode.Editable | SelectionMode.ExcludePrefab | SelectionMode.TopLevel);
+		first = selected.Length == 2 ? selected[0] : null;
+		second = selected.Length == 2 ? selected[1] : null;
+		craft = null;
+		if (first == null || second == null)
+		{
+			return false;
+		}
+
+		craft = first.GetComponentInParent<Craft>();
+		return craft != null && craft == second.GetComponentInParent<Craft>() && first != second;
+	}
+
+	// 用一条新的 reciprocal 连接替换两个端点当前占用的旧连接。 / Replace the current connections occupying two attach points with one new reciprocal connection.
+	private static void ConnectFuselageEnds(Craft craft, FuselagePart first, int firstAttachPointId, FuselagePart second, int secondAttachPointId)
+	{
+		if (craft == null || first == null || second == null)
+		{
+			return;
+		}
+
+		Undo.RecordObjects(new Object[] { craft, first, second }, "Auto Connect Fuselages");
+
+		first.RemoveConnectionEndpointsForLocalAttachPoint(firstAttachPointId);
+		craft.SynchronizeConnectionsFrom(first);
+		second.RemoveConnectionEndpointsForLocalAttachPoint(secondAttachPointId);
+		craft.SynchronizeConnectionsFrom(second);
+
+		int connectionId = craft.AllocateConnectionId();
+		first.AddConnectionEndpoint(connectionId, isPartAEndpoint: true, localAttachPointId: firstAttachPointId, connectedPartId: second.PartId, connectedAttachPointId: secondAttachPointId);
+		craft.SynchronizeConnectionsFrom(first);
+
+		EditorUtility.SetDirty(craft);
+		EditorUtility.SetDirty(first);
+		EditorUtility.SetDirty(second);
+		craft.RebuildPreviewForPart(first, lightweight: false);
+		EditorApplication.QueuePlayerLoopUpdate();
 		SceneView.RepaintAll();
 	}
 

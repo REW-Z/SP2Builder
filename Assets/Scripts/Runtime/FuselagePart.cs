@@ -18,7 +18,9 @@ public enum FuselageSerializationMode
 public enum FuselageVisualStyle
 {
 	Body,
-	Hollow
+	Hollow,
+	Cone,
+	HollowCone
 }
 
 [ExecuteAlways]
@@ -30,6 +32,8 @@ public class FuselagePart : Part
 	private const int MaxSpatialNeighbourSearchFuselages = 96;
 
 	private const int MaxSpatialSmoothingFuselages = 96;
+
+	private const float ConeNeighbourSmoothMergeRadius = 0.01f;
 
 	private static readonly float[] LegacyCornerRadiusFromStyle = { 0f, 0.25f, 0.5f, 1f };
 
@@ -43,6 +47,9 @@ public class FuselagePart : Part
 
 	[SerializeField]
 	private FuselageVisualStyle _visualStyle = FuselageVisualStyle.Body;
+
+	[SerializeField, Range(0f, 1f)]
+	private float _noseconeRoundness = 0.5f;
 
 	[SerializeField]
 	private bool _glass;
@@ -154,7 +161,9 @@ public class FuselagePart : Part
 			capRear = capRear,
 			capFront = capFront,
 			applySectionCutting = applySectionCutting,
-			hollow = _visualStyle == FuselageVisualStyle.Hollow,
+			hollow = IsHollowStyle(),
+			cone = IsConeStyle(),
+			noseconeRoundness = _noseconeRoundness,
 			version = Interlocked.Increment(ref _meshProcessVersion),
 			worldMatrix = transform.localToWorldMatrix,
 			cutterPreviewDataList = new List<PreviewMeshData>(),
@@ -198,7 +207,7 @@ public class FuselagePart : Part
 	{
 		try
 		{
-			PreviewMeshData meshData = FuselageGeometry.BuildLoftData(job.rearSection, job.frontSection, job.offset, job.hollow, job.capRear, job.capFront, job.applySectionCutting);
+			PreviewMeshData meshData = FuselageGeometry.BuildLoftData(job.rearSection, job.frontSection, job.offset, job.hollow, job.cone, job.noseconeRoundness, job.capRear, job.capFront, job.applySectionCutting);
 			if (job.cutterPreviewDataList != null && job.cutterPreviewDataList.Count > 0)
 			{
 				meshData = ApplyTargetedCarvers(job, meshData);
@@ -284,6 +293,12 @@ public class FuselagePart : Part
 			DestroyOwnedObject(previousMesh);
 		}
 		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
+
+		Craft craft = GetOwningCraft();
+		if (craft != null)
+		{
+			FuselagePart.ApplyNeighbourSmoothing(craft, new[] { PartId });
+		}
 	}
 
 	// 清空当前机身预览网格，但保留预览材质状态。 / Clear the current fuselage preview mesh while preserving the preview material state.
@@ -317,7 +332,7 @@ public class FuselagePart : Part
 			return false;
 		}
 
-		PreviewMeshData meshData = FuselageGeometry.BuildLoftData(_rearSection, _frontSection, _offset, _visualStyle == FuselageVisualStyle.Hollow, capRear, capFront);
+		PreviewMeshData meshData = FuselageGeometry.BuildLoftData(_rearSection, _frontSection, _offset, IsHollowStyle(), IsConeStyle(), _noseconeRoundness, capRear, capFront);
 		if (meshData == null || meshData.Vertices.Count == 0)
 		{
 			return false;
@@ -434,6 +449,28 @@ public class FuselagePart : Part
 		return true;
 	}
 
+	// 把相连机身对应端面的截面设置复制到当前前/后端。 / Copy the connected fuselage end section settings into this front or rear section.
+	public bool TryCopyConnectedSection(bool front)
+	{
+		if (!TryFindConnectedNeighbour(front, out FuselagePart neighbour, out bool neighbourFront))
+		{
+			return false;
+		}
+
+		if (front)
+		{
+			_frontSection = neighbour.GetEndSection(neighbourFront);
+		}
+		else
+		{
+			_rearSection = neighbour.GetEndSection(neighbourFront);
+		}
+
+		CanonicalizeSections();
+		MarkStateXmlDirty();
+		return true;
+	}
+
 	// 返回前后端和四个中段侧面的 attach point 局部坐标。 / Return the local attach-point positions for both ends and the four mid-section sides.
 	public override Vector3 GetAttachPointLocalPosition(int attachPointId)
 	{
@@ -461,6 +498,7 @@ public class FuselagePart : Part
 		FuselagePart[] fuselages = craft.GetComponentsInChildren<FuselagePart>(includeInactive: true);
 		Dictionary<FuselagePart, Vector3[]> baseNormals = new Dictionary<FuselagePart, Vector3[]>(fuselages.Length);
 		Dictionary<FuselagePart, Vector3[]> workingNormals = new Dictionary<FuselagePart, Vector3[]>(fuselages.Length);
+		HashSet<FuselagePart> writeBackFuselages = affectedPartIds != null ? new HashSet<FuselagePart>() : null;
 		// 先缓存每个机身的原始法线，便于单向平滑时读取未污染的源数据。 / Capture each fuselage's original normals so one-sided smoothing can sample the untouched source.
 		for (int i = 0; i < fuselages.Length; i++)
 		{
@@ -482,17 +520,17 @@ public class FuselagePart : Part
 
 		if (craft.HasConnectionData)
 		{
-			SmoothConnectedEnds(fuselages, baseNormals, workingNormals, affectedPartIds);
+			SmoothConnectedEnds(fuselages, baseNormals, workingNormals, affectedPartIds, writeBackFuselages);
 		}
 		else if (fuselages.Length <= MaxSpatialSmoothingFuselages)
 		{
-			SmoothSpatiallyMatchedEnds(fuselages, baseNormals, workingNormals, affectedPartIds);
+			SmoothSpatiallyMatchedEnds(fuselages, baseNormals, workingNormals, affectedPartIds, writeBackFuselages);
 		}
 
 		// 所有接缝配对结束后再写回法线，避免同一批数据重复写入 Mesh。 / Push normals back once after all seam pairs so the same mesh is not rewritten repeatedly.
 		foreach ((FuselagePart fuselage, Vector3[] normals) in workingNormals)
 		{
-			if (affectedPartIds != null && !affectedPartIds.Contains(fuselage.PartId))
+			if (writeBackFuselages != null && !writeBackFuselages.Contains(fuselage))
 			{
 				continue;
 			}
@@ -506,7 +544,8 @@ public class FuselagePart : Part
 		IReadOnlyList<FuselagePart> fuselages,
 		Dictionary<FuselagePart, Vector3[]> baseNormals,
 		Dictionary<FuselagePart, Vector3[]> workingNormals,
-		IReadOnlyCollection<int> affectedPartIds)
+		IReadOnlyCollection<int> affectedPartIds,
+		ISet<FuselagePart> writeBackFuselages)
 	{
 		HashSet<string> visitedPairs = new HashSet<string>();
 		for (int i = 0; i < fuselages.Count; i++)
@@ -544,6 +583,8 @@ public class FuselagePart : Part
 				}
 
 				SmoothEndPair(fuselage, fuselageFront, connectedFuselage, connectedFront, baseNormals, workingNormals);
+				writeBackFuselages?.Add(fuselage);
+				writeBackFuselages?.Add(connectedFuselage);
 			}
 		}
 	}
@@ -553,7 +594,8 @@ public class FuselagePart : Part
 		IReadOnlyList<FuselagePart> fuselages,
 		Dictionary<FuselagePart, Vector3[]> baseNormals,
 		Dictionary<FuselagePart, Vector3[]> workingNormals,
-		IReadOnlyCollection<int> affectedPartIds)
+		IReadOnlyCollection<int> affectedPartIds,
+		ISet<FuselagePart> writeBackFuselages)
 	{
 		for (int i = 0; i < fuselages.Count; i++)
 		{
@@ -576,6 +618,8 @@ public class FuselagePart : Part
 						}
 
 						SmoothEndPair(fuselages[i], aFront, fuselages[j], bFront, baseNormals, workingNormals);
+						writeBackFuselages?.Add(fuselages[i]);
+						writeBackFuselages?.Add(fuselages[j]);
 					}
 				}
 			}
@@ -617,11 +661,6 @@ public class FuselagePart : Part
 			return false;
 		}
 
-		if (a._visualStyle != b._visualStyle || a._glass != b._glass)
-		{
-			return false;
-		}
-
 		Vector3 aPosition = a.GetSliceCraftPosition(aFront);
 		Vector3 bPosition = b.GetSliceCraftPosition(bFront);
 		if ((aPosition - bPosition).sqrMagnitude > 0.0025f)
@@ -649,6 +688,9 @@ public class FuselagePart : Part
 		_offset = XmlUtil.ParseVector3((string)stateElement.Attribute("offset"), _offset);
 		_visualStyle = ParseVisualStyle((string)stateElement.Attribute("style"));
 		_glass = XmlUtil.ParseBool((string)stateElement.Attribute("glass"));
+		_noseconeRoundness = IsConeStyle()
+			? XmlUtil.ParseFloat((string)stateElement.Attribute("noseconeRoundness"), 0.5f)
+			: 0.5f;
 		_rearSection = ParseJSection(stateElement.Element("SectionA"), _rearSection);
 		_frontSection = ParseJSection(stateElement.Element("SectionB"), _frontSection);
 		CanonicalizeSections();
@@ -657,14 +699,17 @@ public class FuselagePart : Part
 	// 用当前编辑器值写出现代 JFuselage 状态块。 / Write the modern JFuselage state block using the current editor values.
 	private void WriteJFuselageState(XElement partElement)
 	{
+		SetPartType(GetJFuselagePartType());
+		partElement.SetAttributeValue("partType", PartType);
 		RemoveStateElements(partElement, "Fuselage.State");
 		bool hasRawState = !string.IsNullOrWhiteSpace(_rawStateXml);
 		XElement stateElement = hasRawState ? XElement.Parse(_rawStateXml) : new XElement("JFuselage.State");
 		stateElement.Name = "JFuselage.State";
 		stateElement.SetAttributeValue("version", 3);
 		stateElement.SetAttributeValue("offset", XmlUtil.FormatVector3(_offset));
-		stateElement.SetAttributeValue("style", _visualStyle == FuselageVisualStyle.Hollow ? "Hollow" : "Body");
+		stateElement.SetAttributeValue("style", GetStyleText(_visualStyle));
 		stateElement.SetAttributeValue("glass", XmlUtil.FormatBool(_glass));
+		stateElement.SetAttributeValue("noseconeRoundness", IsConeStyle() ? XmlUtil.FormatFloat(_noseconeRoundness) : null);
 		if (!hasRawState)
 		{
 			stateElement.SetAttributeValue("mass", "0,0,0,0");
@@ -701,9 +746,12 @@ public class FuselagePart : Part
 		ApplyLegacyCornerTypes(ref _frontSection, (string)stateElement.Attribute("cornerTypes"), 0);
 		ApplyLegacyCornerTypes(ref _rearSection, (string)stateElement.Attribute("cornerTypes"), 4);
 		string partType = (string)partElement.Attribute("partType") ?? string.Empty;
-		_visualStyle = partType.Contains("Hollow", StringComparison.OrdinalIgnoreCase) || partType.Contains("Glass-2", StringComparison.OrdinalIgnoreCase) || partType.Contains("Inlet", StringComparison.OrdinalIgnoreCase)
-			? FuselageVisualStyle.Hollow
-			: FuselageVisualStyle.Body;
+		bool isCone = partType.Contains("Cone", StringComparison.OrdinalIgnoreCase);
+		bool isHollow = partType.Contains("Hollow", StringComparison.OrdinalIgnoreCase) || partType.Contains("Glass-2", StringComparison.OrdinalIgnoreCase) || partType.Contains("Inlet", StringComparison.OrdinalIgnoreCase);
+		_visualStyle = isCone
+			? (isHollow ? FuselageVisualStyle.HollowCone : FuselageVisualStyle.Cone)
+			: (isHollow ? FuselageVisualStyle.Hollow : FuselageVisualStyle.Body);
+		_noseconeRoundness = 0.5f;
 		_glass = partType.Contains("Glass", StringComparison.OrdinalIgnoreCase);
 		CanonicalizeSections();
 	}
@@ -764,60 +812,10 @@ public class FuselagePart : Part
 	}
 
 
-	// 找到第一个与当前端面足够吻合、可以共享接缝的邻接机身端面。 / Find the first fuselage end that matches this end closely enough to share a seam.
-	private bool TryFindMatchingNeighbour(bool front, out FuselagePart neighbour, out bool neighbourFront)
-	{
-		neighbour = null;
-		neighbourFront = false;
-		if (TryFindConnectedNeighbour(front, out neighbour, out neighbourFront) && AreConnectedEndsSmoothable(this, front, neighbour, neighbourFront))
-		{
-			return true;
-		}
-
-		Craft craft = GetOwningCraft();
-		if (craft.HasConnectionData)
-		{
-			return false;
-		}
-
-		FuselagePart[] candidates = craft.GetComponentsInChildren<FuselagePart>(includeInactive: true);
-		if (candidates.Length > MaxSpatialNeighbourSearchFuselages)
-		{
-			return false;
-		}
-
-		foreach (FuselagePart other in candidates)
-		{
-			if (other == this)
-			{
-				continue;
-			}
-			for (int i = 0; i < 2; i++)
-			{
-				bool otherFront = i == 1;
-				if (!AreEndsCompatible(this, front, other, otherFront))
-				{
-					continue;
-				}
-
-				neighbour = other;
-				neighbourFront = otherFront;
-				return true;
-			}
-		}
-
-		return false;
-	}
-
 	// 在世界空间比较两个机身端面，判断它们是否属于同一条接缝。 / Compare two fuselage ends in world space to decide whether they represent the same seam.
 	private static bool AreEndsCompatible(FuselagePart a, bool aFront, FuselagePart b, bool bFront)
 	{
 		if (a == null || b == null)
-		{
-			return false;
-		}
-
-		if (a._visualStyle != b._visualStyle || a._glass != b._glass)
 		{
 			return false;
 		}
@@ -850,12 +848,22 @@ public class FuselagePart : Part
 
 		Vector3[] targetVertices = target._meshFilter.sharedMesh.vertices;
 		Vector3[] sourceVertices = source._meshFilter.sharedMesh.vertices;
-		List<int> targetSeam = FindSeamVertices(targetVertices, targetNormals, target, targetFront);
-		List<int> sourceSeam = FindSeamVertices(sourceVertices, sourceNormals, source, sourceFront);
+		bool useConeMergeRadius = target.IsConeStyle() || source.IsConeStyle();
+		if (useConeMergeRadius)
+		{
+			SmoothConeMergedNormals(target, targetFront, targetVertices, targetNormals, source, sourceFront, sourceVertices, sourceNormals, setMean);
+			return;
+		}
+
+		float seamTolerance = 0.00075f;
+		List<int> targetSeam = FindSeamVertices(targetVertices, targetNormals, target, targetFront, seamTolerance);
+		List<int> sourceSeam = FindSeamVertices(sourceVertices, sourceNormals, source, sourceFront, seamTolerance);
 		if (targetSeam.Count == 0 || sourceSeam.Count == 0)
 		{
 			return;
 		}
+
+		Vector3 seamNormal = target.GetSliceCraftNormal(targetFront);
 
 		// 为目标端面的每个接缝顶点寻找世界空间里最近的源顶点。 / Match each target seam vertex to the nearest source seam vertex in world space.
 		for (int i = 0; i < targetSeam.Count; i++)
@@ -864,17 +872,25 @@ public class FuselagePart : Part
 			Vector3 targetCraftPosition = target.TransformPointToCraftSpace(targetVertices[targetIndex]);
 			Vector3 targetCraftNormal = target.TransformDirectionToCraftSpace(targetNormals[targetIndex]);
 			int bestSourceIndex = -1;
-			float bestDistance = 0.0004f;
+			float bestPlanarDistance = 0.0004f;
+			float bestAxialDistance = float.PositiveInfinity;
 			float bestNormalScore = float.NegativeInfinity;
 			for (int j = 0; j < sourceSeam.Count; j++)
 			{
 				int candidate = sourceSeam[j];
-				float distance = (targetCraftPosition - source.TransformPointToCraftSpace(sourceVertices[candidate])).sqrMagnitude;
+				Vector3 candidateCraftPosition = source.TransformPointToCraftSpace(sourceVertices[candidate]);
+				Vector3 delta = targetCraftPosition - candidateCraftPosition;
 				Vector3 candidateCraftNormal = source.TransformDirectionToCraftSpace(sourceNormals[candidate]);
+				float axialDistance = Mathf.Abs(Vector3.Dot(delta, seamNormal));
+				Vector3 planarDelta = delta - Vector3.Dot(delta, seamNormal) * seamNormal;
+				float planarDistance = planarDelta.sqrMagnitude;
 				float normalScore = Vector3.Dot(targetCraftNormal, candidateCraftNormal);
-				if (distance < bestDistance - 0.0000001f || (Mathf.Abs(distance - bestDistance) <= 0.0000001f && normalScore > bestNormalScore))
+				if (planarDistance < bestPlanarDistance - 0.0000001f
+					|| (Mathf.Abs(planarDistance - bestPlanarDistance) <= 0.0000001f && axialDistance < bestAxialDistance - 0.0000001f)
+					|| (Mathf.Abs(planarDistance - bestPlanarDistance) <= 0.0000001f && Mathf.Abs(axialDistance - bestAxialDistance) <= 0.0000001f && normalScore > bestNormalScore))
 				{
-					bestDistance = distance;
+					bestPlanarDistance = planarDistance;
+					bestAxialDistance = axialDistance;
 					bestSourceIndex = candidate;
 					bestNormalScore = normalScore;
 				}
@@ -885,8 +901,74 @@ public class FuselagePart : Part
 				continue;
 			}
 
-			Vector3 sourceCraftNormal = source.TransformDirectionToCraftSpace(sourceNormals[bestSourceIndex]);
-			Vector3 resolved = setMean ? (targetCraftNormal + sourceCraftNormal).normalized : sourceCraftNormal;
+			Vector3 matchedSourceCraftNormal = source.TransformDirectionToCraftSpace(sourceNormals[bestSourceIndex]);
+			Vector3 resolved = setMean ? (targetCraftNormal + matchedSourceCraftNormal).normalized : matchedSourceCraftNormal;
+			if (resolved.sqrMagnitude <= 0.0001f)
+			{
+				continue;
+			}
+
+			targetNormals[targetIndex] = target.TransformDirectionFromCraftSpace(resolved);
+		}
+	}
+
+	// 当 Cone 参与时，按原版 smooth job 的近邻思路在整张侧面网格上找配对，不再依赖“精确端面一圈”命中。 / When a cone is involved, approximate the original smooth job by matching nearby side-surface vertices across the whole mesh instead of relying on exact seam-ring selection.
+	private static void SmoothConeMergedNormals(
+		FuselagePart target,
+		bool targetFront,
+		Vector3[] targetVertices,
+		Vector3[] targetNormals,
+		FuselagePart source,
+		bool sourceFront,
+		Vector3[] sourceVertices,
+		Vector3[] sourceNormals,
+		bool setMean)
+	{
+		float mergeDistanceSquared = ConeNeighbourSmoothMergeRadius * ConeNeighbourSmoothMergeRadius;
+		Vector3 targetPlaneNormal = target.GetAxisLocal(targetFront);
+		Vector3 sourcePlaneNormal = source.GetAxisLocal(sourceFront);
+
+		for (int targetIndex = 0; targetIndex < targetVertices.Length; targetIndex++)
+		{
+			if (IsFlatEndCapNormal(targetNormals, targetIndex, targetPlaneNormal))
+			{
+				continue;
+			}
+
+			Vector3 targetCraftNormal = target.TransformDirectionToCraftSpace(targetNormals[targetIndex]);
+			Vector3 targetCraftPosition = target.TransformPointToCraftSpace(targetVertices[targetIndex]);
+			int bestSourceIndex = -1;
+			float bestScore = float.PositiveInfinity;
+			for (int sourceIndex = 0; sourceIndex < sourceVertices.Length; sourceIndex++)
+			{
+				if (IsFlatEndCapNormal(sourceNormals, sourceIndex, sourcePlaneNormal))
+				{
+					continue;
+				}
+
+				Vector3 sourceCraftPosition = source.TransformPointToCraftSpace(sourceVertices[sourceIndex]);
+				float distance = (targetCraftPosition - sourceCraftPosition).sqrMagnitude;
+				if (distance > mergeDistanceSquared)
+				{
+					continue;
+				}
+
+				Vector3 sourceCraftNormal = source.TransformDirectionToCraftSpace(sourceNormals[sourceIndex]);
+				float score = (sourceCraftNormal - targetCraftNormal).sqrMagnitude * 2f + distance;
+				if (score < bestScore)
+				{
+					bestScore = score;
+					bestSourceIndex = sourceIndex;
+				}
+			}
+
+			if (bestSourceIndex < 0)
+			{
+				continue;
+			}
+
+			Vector3 matchedSourceCraftNormal = source.TransformDirectionToCraftSpace(sourceNormals[bestSourceIndex]);
+			Vector3 resolved = setMean ? (targetCraftNormal + matchedSourceCraftNormal).normalized : matchedSourceCraftNormal;
 			if (resolved.sqrMagnitude <= 0.0001f)
 			{
 				continue;
@@ -897,12 +979,26 @@ public class FuselagePart : Part
 	}
 
 	// 找出位于机身前后端面接缝平面上的顶点。 / Identify vertices that lie on a fuselage's front or rear seam plane.
-	private static List<int> FindSeamVertices(Vector3[] vertices, Vector3[] normals, FuselagePart part, bool front)
+	private static List<int> FindSeamVertices(Vector3[] vertices, Vector3[] normals, FuselagePart part, bool front, float craftPlaneTolerance)
 	{
 		List<int> indices = new List<int>();
 		Vector3 planePoint = part.GetSliceLocalPosition(front);
 		Vector3 planeNormal = part.GetAxisLocal(front);
-		float tolerance = 0.0015f + part._offset.magnitude * 0.002f;
+		float planeScale = part.TransformVectorToCraftSpace(planeNormal).magnitude;
+		float localTolerance = craftPlaneTolerance / Mathf.Max(0.0001f, planeScale);
+		float closestDistance = float.PositiveInfinity;
+		for (int i = 0; i < vertices.Length; i++)
+		{
+			float distance = Mathf.Abs(Vector3.Dot(vertices[i] - planePoint, planeNormal));
+			if (distance < closestDistance)
+			{
+				closestDistance = distance;
+			}
+		}
+
+		float tolerance = float.IsFinite(closestDistance)
+			? Mathf.Max(localTolerance, closestDistance + localTolerance)
+			: localTolerance;
 		for (int i = 0; i < vertices.Length; i++)
 		{
 			float distance = Mathf.Abs(Vector3.Dot(vertices[i] - planePoint, planeNormal));
@@ -932,7 +1028,7 @@ public class FuselagePart : Part
 			return false;
 		}
 
-		return Mathf.Abs(Vector3.Dot(normal.normalized, planeNormal)) >= 0.985f;
+		return Mathf.Abs(Vector3.Dot(normal.normalized, planeNormal)) >= 0.9995f;
 	}
 
 	// 返回指定前后端截面的局部空间中心点。 / Return the local-space center of the requested end slice.
@@ -1077,12 +1173,64 @@ public class FuselagePart : Part
 		EnsureComponent(ref _meshRenderer);
 	}
 
+	// 判断当前样式是否属于收拢到前端的 cone 机身。 / Check whether the current fuselage style collapses toward a cone tip at the front.
+	private bool IsConeStyle()
+	{
+		return IsConeVisualStyle(_visualStyle);
+	}
+
+	// 判断当前样式是否属于带内腔的 hollow 机身。 / Check whether the current fuselage style contains a hollow interior shell.
+	private bool IsHollowStyle()
+	{
+		return IsHollowVisualStyle(_visualStyle);
+	}
+
+	// 判断一个样式枚举是否代表 cone 或 hollow cone。 / Check whether one style enum value represents a cone variant.
+	private static bool IsConeVisualStyle(FuselageVisualStyle style)
+	{
+		return style == FuselageVisualStyle.Cone || style == FuselageVisualStyle.HollowCone;
+	}
+
+	// 判断一个样式枚举是否代表 hollow 或 hollow cone。 / Check whether one style enum value represents a hollow variant.
+	private static bool IsHollowVisualStyle(FuselageVisualStyle style)
+	{
+		return style == FuselageVisualStyle.Hollow || style == FuselageVisualStyle.HollowCone;
+	}
+
 	// 把源 XML 的样式文本映射成本地预览样式枚举。 / Map the source XML style text into the local preview style enum.
 	private static FuselageVisualStyle ParseVisualStyle(string styleText)
 	{
-		return string.Equals(styleText, "Hollow", StringComparison.OrdinalIgnoreCase) || string.Equals(styleText, "HollowCone", StringComparison.OrdinalIgnoreCase) || string.Equals(styleText, "Inlet", StringComparison.OrdinalIgnoreCase)
+		if (string.Equals(styleText, "Cone", StringComparison.OrdinalIgnoreCase))
+		{
+			return FuselageVisualStyle.Cone;
+		}
+
+		if (string.Equals(styleText, "HollowCone", StringComparison.OrdinalIgnoreCase))
+		{
+			return FuselageVisualStyle.HollowCone;
+		}
+
+		return string.Equals(styleText, "Hollow", StringComparison.OrdinalIgnoreCase) || string.Equals(styleText, "Inlet", StringComparison.OrdinalIgnoreCase)
 			? FuselageVisualStyle.Hollow
 			: FuselageVisualStyle.Body;
+	}
+
+	// 把本地样式枚举转回 JFuselage XML 的 style 字符串。 / Convert the local style enum back into the JFuselage XML style string.
+	private static string GetStyleText(FuselageVisualStyle style)
+	{
+		return style switch
+		{
+			FuselageVisualStyle.Hollow => "Hollow",
+			FuselageVisualStyle.Cone => "Cone",
+			FuselageVisualStyle.HollowCone => "HollowCone",
+			_ => "Body"
+		};
+	}
+
+	// 让现代 JFuselage 的 partType 与当前 cone/body 样式保持一致。 / Keep the modern JFuselage partType aligned with the current cone or body style.
+	private string GetJFuselagePartType()
+	{
+		return IsConeStyle() ? "JFuselage-Cone-1" : "JFuselage-1";
 	}
 
 	// 把一个 JFuselage 截面节点解析成运行时截面设置。 / Parse one JFuselage section element into the runtime section settings struct.
@@ -1278,11 +1426,13 @@ public class FuselagePart : Part
 	{
 		string partType = _visualStyle switch
 		{
+			FuselageVisualStyle.Cone => "Fuselage-Cone-1",
 			FuselageVisualStyle.Hollow when _glass => "Fuselage-Glass-2",
 			FuselageVisualStyle.Hollow => "Fuselage-Hollow-1",
 			_ when _glass => "Fuselage-Glass-1",
 			_ => "Fuselage-Body-1"
 		};
+		SetPartType(partType);
 		partElement.SetAttributeValue("partType", partType);
 	}
 
@@ -1298,14 +1448,13 @@ public class FuselagePart : Part
 		}
 	}
 
-	// 判断两个截面是否足够接近，从而共享接缝平滑和端盖省略逻辑。 / Check whether two sections are close enough to share seam smoothing and cap suppression.
+	// 判断两个截面的外轮廓是否足够接近，从而共享接缝平滑和端盖省略逻辑。 / Check whether two sections have sufficiently similar outer seam shape to share smoothing and cap suppression.
 	private static bool SectionsApproximatelyMatch(FuselageSectionSettings a, FuselageSectionSettings b)
 	{
 		const float epsilon = 0.001f;
 		return Mathf.Abs(a.Width - b.Width) <= epsilon
 			&& Mathf.Abs(a.Height - b.Height) <= epsilon
 			&& Mathf.Abs(a.Trapezium - b.Trapezium) <= epsilon
-			&& Mathf.Abs(a.Thickness - b.Thickness) <= epsilon
 			&& Equals(a.CutEnabled, b.CutEnabled)
 			&& Mathf.Abs(a.CutTop - b.CutTop) <= epsilon
 			&& Mathf.Abs(a.CutRight - b.CutRight) <= epsilon
@@ -1313,9 +1462,7 @@ public class FuselagePart : Part
 			&& Mathf.Abs(a.CutLeft - b.CutLeft) <= epsilon
 			&& Approximately(a.CornerRadii, b.CornerRadii, epsilon)
 			&& Approximately(a.EdgeCurvature, b.EdgeCurvature, epsilon)
-			&& Equals(a.CornerStretch, b.CornerStretch)
-			&& Equals(a.CornerSamples, b.CornerSamples)
-			&& Equals(a.EdgeSamples, b.EdgeSamples);
+			&& Equals(a.CornerStretch, b.CornerStretch);
 	}
 
 	// 用小的绝对误差比较 Float4Value。 / Compare float4-like values using a small absolute tolerance.
@@ -1329,12 +1476,6 @@ public class FuselagePart : Part
 
 	// 逐分量比较 Bool4Value。 / Compare Bool4Value instances component by component.
 	private static bool Equals(Bool4Value a, Bool4Value b)
-	{
-		return a.X == b.X && a.Y == b.Y && a.Z == b.Z && a.W == b.W;
-	}
-
-	// 逐分量比较 Int4Value。 / Compare Int4Value instances component by component.
-	private static bool Equals(Int4Value a, Int4Value b)
 	{
 		return a.X == b.X && a.Y == b.Y && a.Z == b.Z && a.W == b.W;
 	}

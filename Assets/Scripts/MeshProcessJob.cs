@@ -14,6 +14,8 @@ public class MeshProcessJob
     public bool capFront;
     public bool applySectionCutting;
     public bool hollow;
+    public bool cone;
+    public float noseconeRoundness;
     public int version;
 
     //所有的裁切体预览网格数据    

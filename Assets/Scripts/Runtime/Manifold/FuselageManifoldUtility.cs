@@ -16,6 +16,12 @@ namespace SP2Builder.ManifoldRuntime
 				return null;
 			}
 
+			if (!applySectionCutting)
+			{
+				source.Name = meshName;
+				return source;
+			}
+
 			if (!ManifoldRuntimeAvailability.IsAvailable)
 			{
 				ManifoldRuntimeAvailability.LogUnavailableOnce("fuselage loft");
@@ -29,11 +35,6 @@ namespace SP2Builder.ManifoldRuntime
 				{
 					Debug.LogWarning($"manifold source build failed during fuselage loft: {sourceStatus}");
 					return null;
-				}
-
-				if (!applySectionCutting)
-				{
-					return ToPreviewMeshData(sourceManifold, meshName);
 				}
 
 				PreviewMeshData cutVolume = BuildCutVolume(rear, front, offset, meshName + "_Volume");

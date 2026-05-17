@@ -7,6 +7,8 @@ using UnityEngine;
 [Serializable]
 public struct FuselageSectionSettings
 {
+	private const float DefaultMinimumDimension = 0.01f;
+
 	public float Width;
 
 	public float Height;
@@ -188,10 +190,17 @@ public struct FuselageSectionSettings
 	// 把截面值钳制到运行时安全范围内，并恢复未序列化的派生字段。 / Clamp section values into safe runtime ranges and restore nonserialized derived fields.
 	public void Sanitize()
 	{
+		Sanitize(DefaultMinimumDimension);
+	}
+
+	// 在保持其他字段钳制逻辑不变的前提下，允许调用方指定更小的几何最小尺寸。 / Apply the usual section clamping while letting the caller choose a smaller minimum dimension when needed.
+	public void Sanitize(float minimumDimension)
+	{
 		const float cornerStretchEpsilon = 0.0001f;
 		const float cutEpsilon = 0.0001f;
-		Width = Mathf.Max(0.01f, Width);
-		Height = Mathf.Max(0.01f, Height);
+		minimumDimension = Mathf.Max(0f, minimumDimension);
+		Width = Mathf.Max(minimumDimension, Width);
+		Height = Mathf.Max(minimumDimension, Height);
 		Trapezium = Mathf.Clamp(Trapezium, -1f, 1f);
 		Thickness = Mathf.Clamp(Thickness, 0f, 0.99f);
 		CornerRadii.X = Mathf.Max(0f, CornerRadii.X);
@@ -283,6 +292,8 @@ internal static class FuselageGeometry
 {
 	private const float Epsilon = 0.0001f;
 
+	private const float ConeMinimumDimension = 0.00001f;
+
 	private const float MaxEdgeRotationPerSlice = 10f * Mathf.Deg2Rad;
 
 	private readonly struct ClipBounds
@@ -357,7 +368,8 @@ internal static class FuselageGeometry
 			List<Vector2> inTangents,
 			List<Vector2> outTangents,
 			List<bool> sharp,
-			List<float> fractions)
+			List<float> fractions,
+			bool normalizeTangents = true)
 		{
 			Center = center;
 			Points = points != null ? new List<Vector2>(points) : new List<Vector2>();
@@ -370,8 +382,8 @@ internal static class FuselageGeometry
 				Vector2 inTangent = inTangents != null && i < inTangents.Count ? inTangents[i] : Vector2.right;
 				Vector2 outTangent = outTangents != null && i < outTangents.Count ? outTangents[i] : inTangent;
 				bool isSharp = sharp != null && i < sharp.Count && sharp[i];
-				InTangents.Add(NormalizeTangent(inTangent));
-				OutTangents.Add(NormalizeTangent(outTangent));
+				InTangents.Add(normalizeTangents ? NormalizeTangent(inTangent) : inTangent);
+				OutTangents.Add(normalizeTangents ? NormalizeTangent(outTangent) : outTangent);
 				Sharp.Add(isSharp);
 			}
 
@@ -490,19 +502,33 @@ internal static class FuselageGeometry
 
 	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront)
 	{
-		return BuildLoftData(rear, front, offset, hollow, capRear, capFront, applySectionCutting: false);
+		return BuildLoftData(rear, front, offset, hollow, cone: false, noseconeRoundness: 0.5f, capRear, capFront, applySectionCutting: false);
 	}
 
 	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront, bool applySectionCutting)
 	{
-		PreviewMeshData source = BuildRawLoftData(rear, front, offset, hollow, capRear, capFront);
+		return BuildLoftData(rear, front, offset, hollow, cone: false, noseconeRoundness: 0.5f, capRear, capFront, applySectionCutting);
+	}
+
+	// 按样式选择常规 loft 或 cone loft，并在需要时再交给 manifold 做截面裁切。 / Choose between the regular loft and cone loft raw mesh path before handing the result to manifold clipping.
+	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool cone, float noseconeRoundness, bool capRear, bool capFront)
+	{
+		return BuildLoftData(rear, front, offset, hollow, cone, noseconeRoundness, capRear, capFront, applySectionCutting: false);
+	}
+
+	// 按样式构建机身原始网格，并在需要时执行统一的 section-cutting manifold 路径。 / Build the raw fuselage mesh for the requested style and optionally run the shared section-cutting manifold path.
+	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool cone, float noseconeRoundness, bool capRear, bool capFront, bool applySectionCutting)
+	{
+		PreviewMeshData source = cone
+			? BuildRawConeData(rear, front, offset, hollow, capRear, capFront, noseconeRoundness)
+			: BuildRawLoftData(rear, front, offset, hollow, capRear, capFront);
 		if (source == null)
 		{
 			return null;
 		}
 
 		string meshName = string.IsNullOrWhiteSpace(source.Name)
-			? (hollow ? "FuselageHollow" : "FuselageBody")
+			? (hollow ? (cone ? "FuselageHollowCone" : "FuselageHollow") : (cone ? "FuselageCone" : "FuselageBody"))
 			: source.Name;
 		return FuselageManifoldUtility.BuildLoft(source, rear, front, offset, applySectionCutting, meshName);
 	}
@@ -546,8 +572,81 @@ internal static class FuselageGeometry
 			innerRings!.Add(innerRing);
 		}
 
-		// 先把所有 ring 发射出来，便于后续按连续索引拼接侧壁和端盖。 / Emit all rings first so cap and wall stitching can address them by contiguous indices.
-		string meshName = hollow ? "FuselageHollow" : "FuselageBody";
+		return BuildMeshFromRings(outerRings, innerRings, hollow, capRear, capFront, axis, hollow ? "FuselageHollow" : "FuselageBody");
+	}
+
+	// 按原游戏 Cone 样式构建“3 个控制截面 + 二次 Bezier 采样”的机身预览网格。 / Build the cone-style preview mesh using the original game's three control sections and quadratic Bezier sampling.
+	private static PreviewMeshData BuildRawConeData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront, float noseconeRoundness)
+	{
+		using var _ = new SampleProfiler("BuildRawConeData");
+
+		rear.Sanitize();
+		front.Sanitize();
+		Vector3 axis = offset.sqrMagnitude <= Epsilon ? Vector3.forward : offset.normalized;
+		float roundness = Mathf.Clamp01(noseconeRoundness);
+		Vector3 rearCenter = -offset * 0.5f;
+		Vector3 tipPosition = offset * 0.5f;
+		Vector3 coneControlPosition = 0.5f * roundness * offset;
+		FuselageSectionSettings tipControlSection = BuildConeTipControlSection(front);
+		FuselageSectionSettings coneControlSection = SanitizeSection(LerpSectionRaw(LerpSectionRaw(rear, tipControlSection, 0.5f), front, roundness));
+		int intermediateSliceCount = Mathf.Max(5, RequiredIntermediateSlices(rear, coneControlSection));
+		int ringCount = intermediateSliceCount + 1;
+		List<FuselageSectionSettings> sampledSections = new List<FuselageSectionSettings>(ringCount);
+		List<Vector3> sampledPositions = new List<Vector3>(ringCount);
+		List<RingProfile> outerRings = new List<RingProfile>(ringCount);
+
+		for (int i = 0; i < ringCount; i++)
+		{
+			float t = i / (float)ringCount;
+			FuselageSectionSettings section = i == 0 ? rear : EvaluateQuadraticSection(rear, coneControlSection, tipControlSection, t);
+			Vector3 center = EvaluateQuadratic(rearCenter, coneControlPosition, tipPosition, t);
+			sampledSections.Add(section);
+			sampledPositions.Add(center);
+			RingProfile outerRing = BuildSectionRing(section, center, ConeMinimumDimension);
+			if (outerRing.Count < 3)
+			{
+				Debug.LogError("Failed to build fuselage cone outer section outline for manifold loft.");
+				return null;
+			}
+
+			outerRings.Add(outerRing);
+		}
+
+		List<RingProfile> innerRings = null;
+		Vector3? innerTipPosition = null;
+		if (hollow)
+		{
+			if (!TryBuildConeInnerRings(sampledSections, sampledPositions, outerRings, axis, tipPosition, out innerRings, out innerTipPosition))
+			{
+				Debug.LogError("Failed to build fuselage cone inner section outline for manifold loft.");
+				return null;
+			}
+		}
+
+		return BuildMeshFromRings(
+			outerRings,
+			innerRings,
+			hollow,
+			capRear,
+			capFront,
+			axis,
+			hollow ? "FuselageHollowCone" : "FuselageCone",
+			frontOuterTip: tipPosition,
+			frontInnerTip: innerTipPosition);
+	}
+
+	// 统一把 ring loft、端盖和可选 cone tip 收口组装成 PreviewMeshData。 / Assemble the ring loft, caps, and optional cone tip closures into one PreviewMeshData.
+	private static PreviewMeshData BuildMeshFromRings(
+		IReadOnlyList<RingProfile> outerRings,
+		IReadOnlyList<RingProfile> innerRings,
+		bool hollow,
+		bool capRear,
+		bool capFront,
+		Vector3 axis,
+		string meshName,
+		Vector3? frontOuterTip = null,
+		Vector3? frontInnerTip = null)
+	{
 		List<Vector3> vertices = new List<Vector3>();
 		List<int> triangles = new List<int>();
 
@@ -580,7 +679,6 @@ internal static class FuselageGeometry
 			normals.Add(Vector3.zero);
 		}
 
-		// 先生成平滑侧壁法线，再补平面的前后端盖法线。 / Generate smooth side normals before adding flat-shaded front and rear caps.
 		ApplyLoftNormals(normals, outerRings, invert: false, axis);
 		if (hollow && innerRings != null)
 		{
@@ -593,9 +691,22 @@ internal static class FuselageGeometry
 			{
 				CapRimFlat(vertices, normals, triangles, outerRings[0], innerRings[0], Vector3.back, flip: false);
 			}
+
 			if (capFront)
 			{
-				CapRimFlat(vertices, normals, triangles, outerRings[^1], innerRings[^1], Vector3.forward, flip: true);
+				if (frontOuterTip.HasValue)
+				{
+					ConnectRingToPoint(vertices, normals, triangles, outerRings[^1], frontOuterTip.Value, axis);
+				}
+				else
+				{
+					CapRimFlat(vertices, normals, triangles, outerRings[^1], innerRings[^1], Vector3.forward, flip: true);
+				}
+
+				if (frontInnerTip.HasValue)
+				{
+					ConnectRingToPoint(vertices, normals, triangles, innerRings[^1], frontInnerTip.Value, -axis);
+				}
 			}
 		}
 		else
@@ -604,15 +715,189 @@ internal static class FuselageGeometry
 			{
 				CapRingFlat(vertices, normals, triangles, outerRings[0], Vector3.back, flip: false);
 			}
+
 			if (capFront)
 			{
-				CapRingFlat(vertices, normals, triangles, outerRings[^1], Vector3.forward, flip: true);
+				if (frontOuterTip.HasValue)
+				{
+					ConnectRingToPoint(vertices, normals, triangles, outerRings[^1], frontOuterTip.Value, axis);
+				}
+				else
+				{
+					CapRingFlat(vertices, normals, triangles, outerRings[^1], Vector3.forward, flip: true);
+				}
 			}
 		}
 
-		PreviewMeshData meshData = new PreviewMeshData(meshName, vertices, normals, triangles);
+		return new PreviewMeshData(meshName, vertices, normals, triangles);
+	}
 
-		return meshData;
+	// 构造一个原版 cone 使用的零尺寸 tip 控制截面；它只参与 Bezier 控制，不直接进入常规 ring 生成。 / Construct the original cone's zero-size tip control section for Bezier control only.
+	private static FuselageSectionSettings BuildConeTipControlSection(FuselageSectionSettings front)
+	{
+		FuselageSectionSettings tip = front;
+		tip.Width = 0f;
+		tip.Height = 0f;
+		tip.Trapezium = 0f;
+		tip.Thickness = 0f;
+		tip.CornerRadii = Float4Value.Repeat(1f);
+		tip.CornerStretch = Bool4Value.Repeat(true);
+		tip.CornerStretchAmount = Float4Value.Repeat(1f);
+		tip.EdgeCurvature = Float4Value.Repeat(0f);
+		tip.CutTop = 0f;
+		tip.CutBottom = 0f;
+		tip.CutLeft = 0f;
+		tip.CutRight = 0f;
+		tip.CutEnabled = Bool4Value.Repeat(false);
+		return tip;
+	}
+
+	// 用与原版 SectionParams.Bezier 相同的 de Casteljau 方式插值当前运行时截面。 / Evaluate one runtime section with the same de Casteljau flow as the original SectionParams.Bezier.
+	private static FuselageSectionSettings EvaluateQuadraticSection(FuselageSectionSettings a, FuselageSectionSettings b, FuselageSectionSettings c, float t)
+	{
+		return SanitizeSection(LerpSectionRaw(LerpSectionRaw(a, b, t), LerpSectionRaw(b, c, t), t), ConeMinimumDimension);
+	}
+
+	// 在不提前钳制零尺寸控制点的前提下，按字段插值两个截面。 / Interpolate two sections field-by-field without sanitizing away zero-size cone control points.
+	private static FuselageSectionSettings LerpSectionRaw(FuselageSectionSettings a, FuselageSectionSettings b, float t)
+	{
+		Float4Value cornerStretchMask = Float4Value.Lerp(a.GetCornerStretchMask(), b.GetCornerStretchMask(), t);
+		return new FuselageSectionSettings
+		{
+			Width = Mathf.Lerp(a.Width, b.Width, t),
+			Height = Mathf.Lerp(a.Height, b.Height, t),
+			Trapezium = Mathf.Lerp(a.Trapezium, b.Trapezium, t),
+			Thickness = Mathf.Lerp(a.Thickness, b.Thickness, t),
+			CornerRadii = Float4Value.Lerp(a.CornerRadii, b.CornerRadii, t),
+			CornerStretch = Bool4Value.FromFloatMask(cornerStretchMask),
+			CornerStretchAmount = cornerStretchMask,
+			EdgeCurvature = Float4Value.Lerp(a.EdgeCurvature, b.EdgeCurvature, t),
+			CutTop = Mathf.Lerp(a.CutTop, b.CutTop, t),
+			CutBottom = Mathf.Lerp(a.CutBottom, b.CutBottom, t),
+			CutLeft = Mathf.Lerp(a.CutLeft, b.CutLeft, t),
+			CutRight = Mathf.Lerp(a.CutRight, b.CutRight, t),
+			CutEnabled = Bool4Value.FromFloatMask(Float4Value.Lerp(a.CutEnabled.ToFloatMask(), b.CutEnabled.ToFloatMask(), t)),
+			Smooth = t < 0.5f ? a.Smooth : b.Smooth,
+			CornerSamples = new Int4Value(
+				(int)Mathf.Lerp(a.CornerSamples.X, b.CornerSamples.X, t),
+				(int)Mathf.Lerp(a.CornerSamples.Y, b.CornerSamples.Y, t),
+				(int)Mathf.Lerp(a.CornerSamples.Z, b.CornerSamples.Z, t),
+				(int)Mathf.Lerp(a.CornerSamples.W, b.CornerSamples.W, t)),
+			EdgeSamples = new Int4Value(
+				(int)Mathf.Lerp(a.EdgeSamples.X, b.EdgeSamples.X, t),
+				(int)Mathf.Lerp(a.EdgeSamples.Y, b.EdgeSamples.Y, t),
+				(int)Mathf.Lerp(a.EdgeSamples.Z, b.EdgeSamples.Z, t),
+				(int)Mathf.Lerp(a.EdgeSamples.W, b.EdgeSamples.W, t))
+		};
+	}
+
+	// 对局部插值结果做一次正常截面钳制，避免后续 ring 构造吃到非法参数。 / Sanitize an interpolated section before it is emitted into a renderable ring.
+	private static FuselageSectionSettings SanitizeSection(FuselageSectionSettings section)
+	{
+		return SanitizeSection(section, 0.01f);
+	}
+
+	// 构造原版 sharp cone zero-size tip 等价的 4 个重合 sharp 点。 / Build the four coincident sharp points that the original sharp-cone zero-size tip section effectively emits.
+	private static RingProfile BuildCollapsedConeTipRing(Vector3 tipPosition)
+	{
+		List<Vector2> points = new List<Vector2>(4)
+		{
+			Vector2.zero,
+			Vector2.zero,
+			Vector2.zero,
+			Vector2.zero
+		};
+		List<Vector2> inTangents = new List<Vector2>(4)
+		{
+			Vector2.zero,
+			Vector2.zero,
+			Vector2.zero,
+			Vector2.zero
+		};
+		List<Vector2> outTangents = new List<Vector2>(4)
+		{
+			Vector2.zero,
+			Vector2.zero,
+			Vector2.zero,
+			Vector2.zero
+		};
+		List<bool> sharp = new List<bool>(4)
+		{
+			true,
+			true,
+			true,
+			true
+		};
+		List<float> fractions = new List<float>(4)
+		{
+			0.0625f,
+			0.3125f,
+			0.5625f,
+			0.8125f
+		};
+		return new RingProfile(points, tipPosition, inTangents, outTangents, sharp, fractions, normalizeTangents: false);
+	}
+
+	// 对局部插值结果做一次带最小尺寸参数的钳制。 / Sanitize an interpolated section using the requested minimum geometric dimension.
+	private static FuselageSectionSettings SanitizeSection(FuselageSectionSettings section, float minimumDimension)
+	{
+		section.Sanitize(minimumDimension);
+		return section;
+	}
+
+	// 按原版 hollow cone 的“沿轴后退 inset”规则构造内壳 ring 序列。 / Build hollow-cone inner rings by retracting them along the axis using the original inset rule.
+	private static bool TryBuildConeInnerRings(
+		IReadOnlyList<FuselageSectionSettings> sampledSections,
+		IReadOnlyList<Vector3> sampledPositions,
+		IReadOnlyList<RingProfile> outerRings,
+		Vector3 axis,
+		Vector3 tipPosition,
+		out List<RingProfile> innerRings,
+		out Vector3? innerTipPosition)
+	{
+		innerRings = new List<RingProfile>(outerRings.Count);
+		innerTipPosition = null;
+		if (sampledSections == null || sampledPositions == null || outerRings == null || outerRings.Count == 0)
+		{
+			return false;
+		}
+
+		float inset = GetConeInnerTipInset(sampledSections[0]);
+		int totalSectionCount = sampledSections.Count + 1;
+		Vector3 backwards = (sampledPositions[0] - sampledPositions[^1]).sqrMagnitude <= Epsilon ? -axis : (sampledPositions[0] - sampledPositions[^1]).normalized;
+		for (int i = 0; i < outerRings.Count; i++)
+		{
+			float t = i <= 0 ? 0f : i / (float)totalSectionCount;
+			Vector3 innerCenter = sampledPositions[i] + backwards * (t * inset);
+			if (!TryBuildInnerRing(sampledSections[i], innerCenter, outerRings[i], ConeMinimumDimension, out RingProfile innerRing) || innerRing.Count < 3)
+			{
+				innerRings = null;
+				innerTipPosition = null;
+				return false;
+			}
+
+			innerRings.Add(innerRing);
+		}
+
+		Vector3 rawInnerTipPosition = tipPosition + backwards * inset;
+		if (innerRings.Count > 0)
+		{
+			float previousDistance = Vector3.Dot(innerRings[^1].Center - sampledPositions[0], axis);
+			float tipDistance = Vector3.Dot(rawInnerTipPosition - sampledPositions[0], axis);
+			if (tipDistance < previousDistance)
+			{
+				rawInnerTipPosition = innerRings[^1].Center;
+			}
+		}
+
+		innerTipPosition = rawInnerTipPosition;
+		return true;
+	}
+
+	// 估算 hollow cone 内腔 tip 相对外壳 tip 需要后退的距离。 / Estimate how far the hollow-cone inner tip should retract behind the outer tip.
+	private static float GetConeInnerTipInset(FuselageSectionSettings rear)
+	{
+		return Mathf.Max(0f, Mathf.Min(rear.Width, rear.Height) * Mathf.Clamp(rear.Thickness, 0f, 0.99f) * 0.5f);
 	}
 
 	private static int RequiredIntermediateSlices(FuselageSectionSettings a, FuselageSectionSettings b)
@@ -669,7 +954,12 @@ internal static class FuselageGeometry
 
 	private static RingProfile BuildSectionRing(FuselageSectionSettings section, Vector3 center)
 	{
-		section.Sanitize();
+		return BuildSectionRing(section, center, 0.01f);
+	}
+
+	private static RingProfile BuildSectionRing(FuselageSectionSettings section, Vector3 center, float minimumDimension)
+	{
+		section.Sanitize(minimumDimension);
 		Float4Value clampedCornerRadii = ClampCornerRadii(section);
 		Vector2[] unscaledCorners = new Vector2[4];
 		Vector2[] corners = new Vector2[4];
@@ -857,11 +1147,6 @@ internal static class FuselageGeometry
 		return tangent.sqrMagnitude <= Epsilon ? Vector2.right : tangent.normalized;
 	}
 
-	// 当调用方不需要 cut-volume 裁切时，构建未裁切的截面轮廓。 / Build an unclipped section outline when the caller does not need cut-volume clipping.
-	private static List<Vector2> BuildSectionOutline(FuselageSectionSettings section)
-	{
-		return BuildSectionOutline(section, null, out _);
-	}
 
 	// 构建单个截面轮廓，包括 corner 圆弧、弯曲边以及可选 cut 裁切。 / Build one section outline, including corner arcs, curved edges, and optional cut clipping.
 	private static List<Vector2> BuildSectionOutline(FuselageSectionSettings section, ClipBounds? clipBounds, out List<Vector2> tangents)
@@ -1028,20 +1313,24 @@ internal static class FuselageGeometry
 		return result;
 	}
 
-	// 当几何 inset 对薄壁 hollow 截面失败时，退化成简单缩放的内环。 / Build a simple scaled inner loop when geometric insetting fails for thin hollow sections.
-	private static FuselageSectionSettings BuildInnerSectionSettings(FuselageSectionSettings section)
+	private static FuselageSectionSettings BuildInnerSectionSettings(FuselageSectionSettings section, float minimumDimension)
 	{
 		FuselageSectionSettings inner = section;
 		float scale = 1f - Mathf.Clamp(section.Thickness, 0f, 0.99f);
-		inner.Width = Mathf.Max(0.01f, section.Width * scale);
-		inner.Height = Mathf.Max(0.01f, section.Height * scale);
+		inner.Width = Mathf.Max(minimumDimension, section.Width * scale);
+		inner.Height = Mathf.Max(minimumDimension, section.Height * scale);
 		inner.Thickness = 0f;
-		inner.Sanitize();
+		inner.Sanitize(minimumDimension);
 		return inner;
 	}
 
 	// 原版 Hollow 直接生成独立的 inner section；这里保持同一主路径，不再退回旧的几何 inset fallback。 / Original Hollow generates a dedicated inner section directly; keep the runtime on that same path instead of falling back to the old geometric inset flow.
 	private static bool TryBuildInnerRing(FuselageSectionSettings section, Vector3 center, RingProfile outerRing, out RingProfile innerRing)
+	{
+		return TryBuildInnerRing(section, center, outerRing, 0.01f, out innerRing);
+	}
+
+	private static bool TryBuildInnerRing(FuselageSectionSettings section, Vector3 center, RingProfile outerRing, float minimumDimension, out RingProfile innerRing)
 	{
 		innerRing = null;
 		if (outerRing == null || outerRing.Count < 3)
@@ -1049,8 +1338,8 @@ internal static class FuselageGeometry
 			return false;
 		}
 
-		FuselageSectionSettings innerSection = BuildInnerSectionSettings(section);
-		RingProfile directInnerRing = BuildSectionRing(innerSection, center);
+		FuselageSectionSettings innerSection = BuildInnerSectionSettings(section, minimumDimension);
+		RingProfile directInnerRing = BuildSectionRing(innerSection, center, minimumDimension);
 		if (directInnerRing.Count < 3 || !IsInsetLoopInside(outerRing.Points, directInnerRing.Points))
 		{
 			return false;
@@ -1172,6 +1461,13 @@ internal static class FuselageGeometry
 		return omt * omt * a + 2f * omt * t * b + t * t * c;
 	}
 
+	// 计算三维二次 Bezier，在 cone 中心线采样时保留完整的 XYZ 位移。 / Evaluate a 3D quadratic Bezier so cone centerline sampling preserves the full XYZ offset.
+	private static Vector3 EvaluateQuadratic(Vector3 a, Vector3 b, Vector3 c, float t)
+	{
+		float omt = 1f - t;
+		return omt * omt * a + 2f * omt * t * b + t * t * c;
+	}
+
 	// 计算 stretch 生效后采样单个 corner 圆弧所需的几何参数。 / Compute the geometric parameters needed to sample one corner arc after stretch is applied.
 	private static void GetCurveParams(int index, Vector2[] unscaledCorners, FuselageSectionSettings section, float radius, out Vector2 center, out float angle, out float startAngle, out float endAngle, out Vector2 postScale, out bool startMaxed, out bool endMaxed)
 	{
@@ -1217,13 +1513,6 @@ internal static class FuselageGeometry
 			unscaledCorners[i] = point;
 			corners[i] = Vector2.Scale(point, section.HalfSize);
 		}
-	}
-
-	// 对一个归一化点施加当前截面的 trapezium 倾斜。 / Apply the section's trapezium skew to one normalized corner or fallback point.
-	private static Vector2 ApplyTrapezium(Vector2 normalized, FuselageSectionSettings section)
-	{
-		normalized.x *= 1f + normalized.y * section.Trapezium;
-		return Vector2.Scale(normalized, section.HalfSize);
 	}
 
 	private static void AddRing(List<Vector3> vertices, RingProfile ring)
@@ -1643,6 +1932,52 @@ internal static class FuselageGeometry
 		ConnectRim(triangles, outerCap, innerCap, flip);
 	}
 
+	// 用一个共享 tip 顶点把最后一圈 ring 收口成 cone fan。 / Collapse the last ring into a cone fan using one shared tip vertex.
+	private static void ConnectRingToPoint(List<Vector3> vertices, List<Vector3> normals, List<int> triangles, RingProfile ring, Vector3 tipPosition, Vector3 expectedNormal)
+	{
+		if (ring == null || ring.Count < 3)
+		{
+			return;
+		}
+
+		Vector3 tipNormal = expectedNormal.sqrMagnitude <= Epsilon ? Vector3.forward : expectedNormal.normalized;
+		int tipIndex = vertices.Count;
+		vertices.Add(tipPosition);
+		normals.Add(tipNormal);
+
+		for (int i = 0; i < ring.Count; i++)
+		{
+			int next = (i + 1) % ring.Count;
+			int currentIndex = ring.GetOutIndex(i);
+			int nextIndex = ring.GetInIndex(next);
+			if (currentIndex < 0 || nextIndex < 0)
+			{
+				continue;
+			}
+
+			Vector3 current = GetRingVertex(ring, i);
+			Vector3 nextVertex = GetRingVertex(ring, next);
+			Vector3 faceNormal = Vector3.Cross(nextVertex - current, tipPosition - current);
+			if (faceNormal.sqrMagnitude <= Epsilon)
+			{
+				continue;
+			}
+
+			if (Vector3.Dot(faceNormal, tipNormal) < 0f)
+			{
+				triangles.Add(currentIndex);
+				triangles.Add(tipIndex);
+				triangles.Add(nextIndex);
+			}
+			else
+			{
+				triangles.Add(currentIndex);
+				triangles.Add(nextIndex);
+				triangles.Add(tipIndex);
+			}
+		}
+	}
+
 	private static RingProfile DuplicateRing(List<Vector3> vertices, List<Vector3> normals, RingProfile source, Vector3 normal)
 	{
 		List<Vector2> capPoints = BuildCapLoopPoints(source.Points);
@@ -1677,51 +2012,6 @@ internal static class FuselageGeometry
 		if (result.Count > 1 && Vector2.Distance(result[0], result[^1]) <= Epsilon)
 		{
 			result.RemoveAt(result.Count - 1);
-		}
-
-		return result;
-	}
-
-	private static bool[] BuildSharpCornerFlags(List<Vector2> source, List<Vector2> clean)
-	{
-		bool[] flags = new bool[clean.Count];
-		for (int cleanIndex = 0; cleanIndex < clean.Count; cleanIndex++)
-		{
-			for (int sourceIndex = 0; sourceIndex < source.Count; sourceIndex++)
-			{
-				if (Vector2.Distance(clean[cleanIndex], source[sourceIndex]) > Epsilon)
-				{
-					continue;
-				}
-
-				Vector2 previous = source[(sourceIndex - 1 + source.Count) % source.Count];
-				Vector2 next = source[(sourceIndex + 1) % source.Count];
-				if (Vector2.Distance(source[sourceIndex], previous) <= Epsilon || Vector2.Distance(source[sourceIndex], next) <= Epsilon)
-				{
-					flags[cleanIndex] = true;
-					break;
-				}
-			}
-		}
-
-		return flags;
-	}
-
-	private static List<Vector2> DuplicateSharpLoopPoints(List<Vector2> points, bool[] sharpCornerFlags)
-	{
-		if (points == null || sharpCornerFlags == null || points.Count != sharpCornerFlags.Length)
-		{
-			return points;
-		}
-
-		List<Vector2> result = new List<Vector2>(points.Count * 2);
-		for (int i = 0; i < points.Count; i++)
-		{
-			result.Add(points[i]);
-			if (sharpCornerFlags[i])
-			{
-				result.Add(points[i]);
-			}
 		}
 
 		return result;
@@ -2023,18 +2313,6 @@ internal static class FuselageGeometry
 		}
 
 		return new ClipBounds(minX, minY, maxX, maxY);
-	}
-
-
-	// 统一销毁运行期生成的中间 Mesh，避免顺序切平面时堆积临时网格。 / Destroy intermediate runtime-generated meshes consistently so sequential plane slicing does not leak temporary meshes.
-	private static void DestroyGeneratedMesh(Mesh mesh)
-	{
-		if (mesh == null)
-		{
-			return;
-		}
-
-		UnityEngine.Object.DestroyImmediate(mesh);
 	}
 
 	private static float Cross(Vector2 a, Vector2 b)
