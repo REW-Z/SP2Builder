@@ -303,6 +303,8 @@ public class FuselagePartEditor : UnityEditor.Editor
 			EditorGUILayout.PropertyField(section.FindPropertyRelative("Trapezium"));
 			EditorGUILayout.PropertyField(section.FindPropertyRelative("Thickness"));
 			EditorGUILayout.PropertyField(section.FindPropertyRelative("Smooth"));
+			DrawUniformIntField(section.FindPropertyRelative("CornerSamples"), "cornerSamples", 2);
+			DrawUniformIntField(section.FindPropertyRelative("EdgeSamples"), "edgeSamples", 1);
 		});
 		DrawSectionGroup(section, "Corners", draw: () =>
 		{
@@ -438,6 +440,31 @@ public class FuselagePartEditor : UnityEditor.Editor
 			float clampedDisplayValue = Mathf.Clamp(newDisplayValue, 0f, maxDisplayValue);
 			radiusProperty.floatValue = mode == CornerMode.Stretched ? clampedDisplayValue * 0.01f : clampedDisplayValue;
 		}
+	}
+
+	// 用单个整数字段统一设置四个 corner 或四条 edge 的采样数；若当前四个值不一致，则用 mixed-value 显示。 / Use one integer field to set all four corner or edge sample counts, showing a mixed value when the stored components differ.
+	private static void DrawUniformIntField(SerializedProperty property, string label, int minimumValue)
+	{
+		SerializedProperty x = property.FindPropertyRelative("X");
+		SerializedProperty y = property.FindPropertyRelative("Y");
+		SerializedProperty z = property.FindPropertyRelative("Z");
+		SerializedProperty w = property.FindPropertyRelative("W");
+		int currentValue = x.intValue;
+		bool mixed = currentValue != y.intValue || currentValue != z.intValue || currentValue != w.intValue;
+		bool previousShowMixedValue = EditorGUI.showMixedValue;
+		EditorGUI.showMixedValue = mixed;
+		EditorGUI.BeginChangeCheck();
+		int editedValue = EditorGUILayout.IntField(label, currentValue);
+		if (EditorGUI.EndChangeCheck())
+		{
+			int clampedValue = Mathf.Max(minimumValue, editedValue);
+			x.intValue = clampedValue;
+			y.intValue = clampedValue;
+			z.intValue = clampedValue;
+			w.intValue = clampedValue;
+		}
+
+		EditorGUI.showMixedValue = previousShowMixedValue;
 	}
 
 	// 构建一个轻量截面结构，让编辑器 UI 复用运行时的 corner 上限计算。 / Build a lightweight section struct so editor UI can reuse runtime corner limit calculations.
