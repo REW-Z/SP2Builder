@@ -22,6 +22,10 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 	private static readonly string[] ValueComponentNames = { "X", "Y", "Z", "W" };
 
+	private const float CornerDisplayStep = 0.001f;
+
+	private const float CornerDisplayStepInverse = 1000f;
+
 	private const float AutoConnectMaxDistance = 30f;
 
 	private const float AutoConnectMaxDistanceSqr = AutoConnectMaxDistance * AutoConnectMaxDistance;
@@ -428,7 +432,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 			clampedRadius = radiusProperty.floatValue;
 		}
 
-		float displayValue = mode == CornerMode.Stretched ? clampedRadius * 100f : clampedRadius;
+		float displayValue = QuantizeCornerDisplayValue(mode == CornerMode.Stretched ? clampedRadius * 100f : clampedRadius, maxDisplayValue: mode == CornerMode.Stretched ? activeMax * 100f : activeMax);
 		float maxDisplayValue = mode == CornerMode.Stretched ? activeMax * 100f : activeMax;
 		float newDisplayValue = EditorGUILayout.FloatField(displayValue);
 		GUILayout.Label(mode == CornerMode.Stretched ? "%" : "m", GUILayout.Width(18f));
@@ -437,9 +441,19 @@ public class FuselagePartEditor : UnityEditor.Editor
 		// 把百分比输入换算回 stretched corner 内部保存的归一化半径。 / Convert percent input back into the stored normalized radius used by stretched corners.
 		if (!Mathf.Approximately(newDisplayValue, displayValue))
 		{
-			float clampedDisplayValue = Mathf.Clamp(newDisplayValue, 0f, maxDisplayValue);
-			radiusProperty.floatValue = mode == CornerMode.Stretched ? clampedDisplayValue * 0.01f : clampedDisplayValue;
+			float clampedDisplayValue = QuantizeCornerDisplayValue(newDisplayValue, maxDisplayValue);
+			float nextRadius = mode == CornerMode.Stretched ? clampedDisplayValue * 0.01f : clampedDisplayValue;
+			radiusProperty.floatValue = Mathf.Clamp(nextRadius, 0f, activeMax);
 		}
+	}
+
+	// 将 corner 输入限制到 0.001 显示粒度，并允许接近上限时吸附到该粒度。 / Quantize corner editor values to 0.001 display units while snapping near-limit values onto that grid.
+	private static float QuantizeCornerDisplayValue(float value, float maxDisplayValue)
+	{
+		float clampedValue = Mathf.Clamp(value, 0f, maxDisplayValue);
+		float snappedValue = Mathf.Round(clampedValue * CornerDisplayStepInverse) / CornerDisplayStepInverse;
+		float snappedMax = Mathf.Round(Mathf.Max(0f, maxDisplayValue) * CornerDisplayStepInverse) / CornerDisplayStepInverse;
+		return Mathf.Clamp(snappedValue, 0f, snappedMax);
 	}
 
 	// 用单个整数字段统一设置四个 corner 或四条 edge 的采样数；若当前四个值不一致，则用 mixed-value 显示。 / Use one integer field to set all four corner or edge sample counts, showing a mixed value when the stored components differ.
@@ -730,6 +744,10 @@ internal static class PartInspectorUtility
 		{
 			ClonePart(craft, part);
 		}
+		if (SupportsSymmetricCopy(part) && GUILayout.Button("Symmetric Copy", GUILayout.Height(24f)))
+		{
+			SymmetricCopyPart(craft, part);
+		}
 		EditorGUILayout.EndHorizontal();
 	}
 
@@ -787,6 +805,30 @@ internal static class PartInspectorUtility
 		EditorUtility.SetDirty(craft);
 		Selection.activeGameObject = clone.gameObject;
 		SceneView.RepaintAll();
+	}
+
+	private static void SymmetricCopyPart(Craft craft, Part source)
+	{
+		if (craft == null || source == null)
+		{
+			return;
+		}
+
+		Part clone = craft.ClonePartMirrored(source);
+		if (clone == null)
+		{
+			return;
+		}
+
+		Undo.RegisterCreatedObjectUndo(clone.gameObject, "Symmetric Copy Part");
+		EditorUtility.SetDirty(craft);
+		Selection.activeGameObject = clone.gameObject;
+		SceneView.RepaintAll();
+	}
+
+	private static bool SupportsSymmetricCopy(Part part)
+	{
+		return part is FuselagePart || part is IFuselageCarver;
 	}
 
 	private static void RefreshPartPreview(Part part, Craft craft)

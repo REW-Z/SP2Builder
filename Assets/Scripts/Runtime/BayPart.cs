@@ -63,6 +63,21 @@ public class BayPart : Part, IFuselageCarver
         partElement.Add(stateElement);
     }
 
+    // 按左右镜像语义切换单开门的左右朝向。 / Swap single-door handedness for a left-right symmetric duplicate.
+    public void MirrorForSymmetry()
+    {
+        if (string.Equals(_doorStyle, "SingleLeft", System.StringComparison.OrdinalIgnoreCase))
+        {
+            _doorStyle = "SingleRight";
+        }
+        else if (string.Equals(_doorStyle, "SingleRight", System.StringComparison.OrdinalIgnoreCase))
+        {
+            _doorStyle = "SingleLeft";
+        }
+
+        MarkStateXmlDirty();
+    }
+
 	// 刷新 Bay 在编辑器里的线框预览。 / Refresh the bay wireframe preview in the editor.
     public override void RefreshPreview()
     {

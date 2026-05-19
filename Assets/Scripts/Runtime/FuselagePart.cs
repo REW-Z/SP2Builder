@@ -105,6 +105,16 @@ public class FuselagePart : Part
 		}
 	}
 
+	// 按左右镜像语义重排机身局部截面数据，供对称复制复用。 / Mirror fuselage-local section data for a left-right symmetric duplicate.
+	public void MirrorForSymmetry()
+	{
+		_offset.x = -_offset.x;
+		_rearSection = MirrorSection(_rearSection);
+		_frontSection = MirrorSection(_frontSection);
+		CanonicalizeSections();
+		MarkStateXmlDirty();
+	}
+
 	// 重建机身预览网格，包括端盖、切割结果和共享材质。 / Rebuild the fuselage preview mesh, including end caps, cuts, and shared material.
 	public override void RefreshPreview()
     {
@@ -401,6 +411,47 @@ public class FuselagePart : Part
 			&& part is IFuselageCarver
 			&& part.HasExplicitTargets
 			&& part.ExplicitlyTargetsPart(PartId);
+	}
+
+	private static FuselageSectionSettings MirrorSection(FuselageSectionSettings section)
+	{
+		Float4Value cornerStretchMask = section.GetCornerStretchMask();
+		section.CornerRadii = MirrorCornerValues(section.CornerRadii);
+		section.CornerStretch = MirrorCornerValues(section.CornerStretch);
+		section.CornerStretchAmount = MirrorCornerValues(cornerStretchMask);
+		section.EdgeCurvature = MirrorEdgeValues(section.EdgeCurvature);
+		section.CornerSamples = MirrorCornerValues(section.CornerSamples);
+		section.EdgeSamples = MirrorEdgeValues(section.EdgeSamples);
+		float cutRight = section.CutRight;
+		section.CutRight = section.CutLeft;
+		section.CutLeft = cutRight;
+		section.CutEnabled = new Bool4Value(section.CutEnabled.X, section.CutEnabled.W, section.CutEnabled.Z, section.CutEnabled.Y);
+		return section;
+	}
+
+	private static Float4Value MirrorCornerValues(Float4Value value)
+	{
+		return new Float4Value(value.W, value.Z, value.Y, value.X);
+	}
+
+	private static Int4Value MirrorCornerValues(Int4Value value)
+	{
+		return new Int4Value(value.W, value.Z, value.Y, value.X);
+	}
+
+	private static Bool4Value MirrorCornerValues(Bool4Value value)
+	{
+		return new Bool4Value(value.W, value.Z, value.Y, value.X);
+	}
+
+	private static Float4Value MirrorEdgeValues(Float4Value value)
+	{
+		return new Float4Value(value.Z, value.Y, value.X, value.W);
+	}
+
+	private static Int4Value MirrorEdgeValues(Int4Value value)
+	{
+		return new Int4Value(value.Z, value.Y, value.X, value.W);
 	}
 
 	// 在编辑器首次排队重建前，先补齐未序列化的截面派生状态。 / Normalize nonserialized section state before the editor schedules an initial rebuild.

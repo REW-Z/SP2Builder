@@ -62,6 +62,14 @@ public class WindowPart : Part, IFuselageCarver
         partElement.Add(stateElement);
     }
 
+    // 按左右镜像语义翻转 Window 的上下跨度。 / Mirror the window spans for a left-right symmetric duplicate.
+    public void MirrorForSymmetry()
+    {
+        _upperSpan = MirrorSpan(_upperSpan);
+        _lowerSpan = MirrorSpan(_lowerSpan);
+        MarkStateXmlDirty();
+    }
+
 	// 刷新 Window 在编辑器里的线框预览。 / Refresh the window wireframe preview in the editor.
     public override void RefreshPreview()
     {
@@ -95,5 +103,10 @@ public class WindowPart : Part, IFuselageCarver
     private List<Vector2> BuildOutline()
     {
         return FuselageCarverUtility.BuildWindowOutline(_upperSpan, _lowerSpan, _height, _cornerRadius);
+    }
+
+    private static Vector2 MirrorSpan(Vector2 span)
+    {
+        return new Vector2(-span.y, -span.x);
     }
 }

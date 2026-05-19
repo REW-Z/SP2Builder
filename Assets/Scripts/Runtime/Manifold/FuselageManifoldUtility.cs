@@ -472,19 +472,6 @@ namespace SP2Builder.ManifoldRuntime
 			float maxX = center.x + (0.5f - cutRight) * section.Width;
 			float maxY = center.y + (0.5f - cutTop) * section.Height;
 
-			if (minX >= maxX)
-			{
-				float midX = 0.5f * (minX + maxX);
-				minX = midX - 0.0001f;
-				maxX = midX + 0.0001f;
-			}
-			if (minY >= maxY)
-			{
-				float midY = 0.5f * (minY + maxY);
-				minY = midY - 0.0001f;
-				maxY = midY + 0.0001f;
-			}
-
 			return new CutBounds(minX, minY, maxX, maxY);
 		}
 

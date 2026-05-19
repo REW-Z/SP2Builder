@@ -78,6 +78,10 @@ public class Craft : MonoBehaviour
 
 	private const int PreviewRebuildMaxPartsPerFrame = 4;
 
+	private const float MirroredTargetPositionTolerance = 0.05f;
+
+	private const float MirroredTargetRotationToleranceDegrees = 5f;
+
 	private Part[] _activePreviewRebuildParts = Array.Empty<Part>();
 
 	private int _activePreviewRebuildIndex;
@@ -310,6 +314,29 @@ public class Craft : MonoBehaviour
 		return clone;
 	}
 
+	// 按 Craft 本地 X=0 对称面创建一个镜像副本，并按零件类型重排局部状态。 / Create a mirrored duplicate across the craft-local X=0 symmetry plane.
+	public Part ClonePartMirrored(Part source)
+	{
+		if (source == null)
+		{
+			throw new ArgumentNullException(nameof(source));
+		}
+
+		XElement cloneElement = source.ExportPartElement();
+		cloneElement.SetAttributeValue("id", AllocatePartId());
+		Part clone = CreatePartFromXml(cloneElement, AllocateOrderIndex());
+		if (clone == null)
+		{
+			return null;
+		}
+
+		clone.transform.localPosition = MirrorLocalPosition(source.transform.localPosition);
+		clone.transform.localRotation = MirrorLocalRotation(source.transform.localRotation);
+		ApplyMirroredCloneState(source, clone);
+		RebuildAllPreviews();
+		return clone;
+	}
+
 	// 按可见材质槽索引解析一个 Theme 材质。 / Resolve one theme material by the visible material-slot index.
 	public bool TryGetThemeMaterial(int materialId, out CraftThemeMaterial material)
 	{
@@ -390,6 +417,114 @@ public class Craft : MonoBehaviour
 			maxOrder = Mathf.Max(maxOrder, part.OrderIndex);
 		}
 		return maxOrder + 1;
+	}
+
+	private void ApplyMirroredCloneState(Part source, Part clone)
+	{
+		switch (clone)
+		{
+			case FuselagePart fuselage:
+				fuselage.MirrorForSymmetry();
+				break;
+			case WindowPart window:
+				window.MirrorForSymmetry();
+				break;
+			case BayPart bay:
+				bay.MirrorForSymmetry();
+				break;
+		}
+
+		if (!source.HasExplicitTargets)
+		{
+			return;
+		}
+
+		int[] sourceTargetIds = source.GetExplicitTargetPartIds();
+		if (sourceTargetIds.Length == 0)
+		{
+			return;
+		}
+
+		List<int> mirroredTargetIds = new List<int>(sourceTargetIds.Length);
+		for (int i = 0; i < sourceTargetIds.Length; i++)
+		{
+			Part target = FindPartById(sourceTargetIds[i]);
+			Part mirroredTarget = FindMirroredCounterpart(target);
+			mirroredTargetIds.Add(mirroredTarget != null ? mirroredTarget.PartId : sourceTargetIds[i]);
+		}
+
+		clone.SetExplicitTargetPartIds(mirroredTargetIds);
+	}
+
+	private Part FindMirroredCounterpart(Part source)
+	{
+		if (source == null)
+		{
+			return null;
+		}
+
+		Vector3 mirroredPosition = MirrorLocalPosition(source.transform.localPosition);
+		Quaternion mirroredRotation = MirrorLocalRotation(source.transform.localRotation);
+		Part bestMatch = null;
+		float bestScore = float.MaxValue;
+		foreach (Part candidate in GetComponentsInChildren<Part>(includeInactive: true))
+		{
+			if (candidate == null || candidate == source || candidate.GetType() != source.GetType())
+			{
+				continue;
+			}
+
+			if (!string.IsNullOrWhiteSpace(source.PartType)
+				&& !string.Equals(candidate.PartType, source.PartType, StringComparison.Ordinal))
+			{
+				continue;
+			}
+
+			float positionDistance = Vector3.Distance(candidate.transform.localPosition, mirroredPosition);
+			if (positionDistance > MirroredTargetPositionTolerance)
+			{
+				continue;
+			}
+
+			float rotationDelta = Quaternion.Angle(candidate.transform.localRotation, mirroredRotation);
+			if (rotationDelta > MirroredTargetRotationToleranceDegrees)
+			{
+				continue;
+			}
+
+			float score = positionDistance * 100f + rotationDelta;
+			if (score >= bestScore)
+			{
+				continue;
+			}
+
+			bestScore = score;
+			bestMatch = candidate;
+		}
+
+		return bestMatch;
+	}
+
+	private static Vector3 MirrorLocalPosition(Vector3 position)
+	{
+		return new Vector3(-position.x, position.y, position.z);
+	}
+
+	private static Quaternion MirrorLocalRotation(Quaternion rotation)
+	{
+		Vector3 mirroredForward = MirrorLocalDirection(rotation * Vector3.forward);
+		Vector3 mirroredUp = MirrorLocalDirection(rotation * Vector3.up);
+		if (mirroredForward.sqrMagnitude <= 0.0001f || mirroredUp.sqrMagnitude <= 0.0001f)
+		{
+			return rotation;
+		}
+
+		return Quaternion.LookRotation(mirroredForward, mirroredUp);
+	}
+
+	private static Vector3 MirrorLocalDirection(Vector3 direction)
+	{
+		return new Vector3(-direction.x, direction.y, direction.z);
 	}
 
 	// 把一个零件的连接端点同步成整个 Craft 中的双向连接图。 / Synchronize one part's endpoints into the craft-wide reciprocal connection graph.

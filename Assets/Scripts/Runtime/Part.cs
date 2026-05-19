@@ -285,6 +285,33 @@ public abstract class Part : MonoBehaviour
 		return _targetPartIds != null && Array.IndexOf(_targetPartIds, partId) >= 0;
 	}
 
+	// 返回当前显式目标零件 id 的副本。 / Return a copy of the current explicit target part ids.
+	public int[] GetExplicitTargetPartIds()
+	{
+		if (_targetPartIds == null || _targetPartIds.Length == 0)
+		{
+			return Array.Empty<int>();
+		}
+
+		int[] copy = new int[_targetPartIds.Length];
+		Array.Copy(_targetPartIds, copy, copy.Length);
+		return copy;
+	}
+
+	// 用一组新的显式目标零件 id 覆盖当前目标列表。 / Replace the current explicit target list with a new set of part ids.
+	public void SetExplicitTargetPartIds(IEnumerable<int> partIds)
+	{
+		_targetPartIds = partIds == null
+			? Array.Empty<int>()
+			: partIds.Where(id => id > 0).Distinct().ToArray();
+		if (_targetPartIds.Length > 0 && string.IsNullOrWhiteSpace(_targetMode))
+		{
+			_targetMode = "MultipleParts";
+		}
+
+		_stateXmlDirty = true;
+	}
+
 	// 清空当前零件记录的所有连接端点。 / Clear all connection endpoints recorded on this part.
 	public void ClearConnectionEndpoints()
 	{
