@@ -1147,6 +1147,11 @@ internal static class FuselageGeometry
 		return tangent.sqrMagnitude <= Epsilon ? Vector2.right : tangent.normalized;
 	}
 
+	// 当调用方不需要 cut-volume 裁切时，构建未裁切的截面轮廓。 / Build an unclipped section outline when the caller does not need cut-volume clipping.
+	private static List<Vector2> BuildSectionOutline(FuselageSectionSettings section)
+	{
+		return BuildSectionOutline(section, null, out _);
+	}
 
 	// 构建单个截面轮廓，包括 corner 圆弧、弯曲边以及可选 cut 裁切。 / Build one section outline, including corner arcs, curved edges, and optional cut clipping.
 	private static List<Vector2> BuildSectionOutline(FuselageSectionSettings section, ClipBounds? clipBounds, out List<Vector2> tangents)
@@ -1311,6 +1316,12 @@ internal static class FuselageGeometry
 			result[i] = Mathf.Min(section.CornerRadii[i], maxCornerRadii[i]);
 		}
 		return result;
+	}
+
+	// 当几何 inset 对薄壁 hollow 截面失败时，退化成简单缩放的内环。 / Build a simple scaled inner loop when geometric insetting fails for thin hollow sections.
+	private static FuselageSectionSettings BuildInnerSectionSettings(FuselageSectionSettings section)
+	{
+		return BuildInnerSectionSettings(section, 0.01f);
 	}
 
 	private static FuselageSectionSettings BuildInnerSectionSettings(FuselageSectionSettings section, float minimumDimension)
@@ -1513,6 +1524,13 @@ internal static class FuselageGeometry
 			unscaledCorners[i] = point;
 			corners[i] = Vector2.Scale(point, section.HalfSize);
 		}
+	}
+
+	// 对一个归一化点施加当前截面的 trapezium 倾斜。 / Apply the section's trapezium skew to one normalized corner or fallback point.
+	private static Vector2 ApplyTrapezium(Vector2 normalized, FuselageSectionSettings section)
+	{
+		normalized.x *= 1f + normalized.y * section.Trapezium;
+		return Vector2.Scale(normalized, section.HalfSize);
 	}
 
 	private static void AddRing(List<Vector3> vertices, RingProfile ring)
@@ -2017,6 +2035,51 @@ internal static class FuselageGeometry
 		return result;
 	}
 
+	private static bool[] BuildSharpCornerFlags(List<Vector2> source, List<Vector2> clean)
+	{
+		bool[] flags = new bool[clean.Count];
+		for (int cleanIndex = 0; cleanIndex < clean.Count; cleanIndex++)
+		{
+			for (int sourceIndex = 0; sourceIndex < source.Count; sourceIndex++)
+			{
+				if (Vector2.Distance(clean[cleanIndex], source[sourceIndex]) > Epsilon)
+				{
+					continue;
+				}
+
+				Vector2 previous = source[(sourceIndex - 1 + source.Count) % source.Count];
+				Vector2 next = source[(sourceIndex + 1) % source.Count];
+				if (Vector2.Distance(source[sourceIndex], previous) <= Epsilon || Vector2.Distance(source[sourceIndex], next) <= Epsilon)
+				{
+					flags[cleanIndex] = true;
+					break;
+				}
+			}
+		}
+
+		return flags;
+	}
+
+	private static List<Vector2> DuplicateSharpLoopPoints(List<Vector2> points, bool[] sharpCornerFlags)
+	{
+		if (points == null || sharpCornerFlags == null || points.Count != sharpCornerFlags.Length)
+		{
+			return points;
+		}
+
+		List<Vector2> result = new List<Vector2>(points.Count * 2);
+		for (int i = 0; i < points.Count; i++)
+		{
+			result.Add(points[i]);
+			if (sharpCornerFlags[i])
+			{
+				result.Add(points[i]);
+			}
+		}
+
+		return result;
+	}
+
 	private static int[] FindClosestLinks(List<float> source, List<float> target)
 	{
 		int[] links = new int[source.Count];
@@ -2313,6 +2376,18 @@ internal static class FuselageGeometry
 		}
 
 		return new ClipBounds(minX, minY, maxX, maxY);
+	}
+
+
+	// 统一销毁运行期生成的中间 Mesh，避免顺序切平面时堆积临时网格。 / Destroy intermediate runtime-generated meshes consistently so sequential plane slicing does not leak temporary meshes.
+	private static void DestroyGeneratedMesh(Mesh mesh)
+	{
+		if (mesh == null)
+		{
+			return;
+		}
+
+		UnityEngine.Object.DestroyImmediate(mesh);
 	}
 
 	private static float Cross(Vector2 a, Vector2 b)

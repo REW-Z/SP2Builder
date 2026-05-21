@@ -1300,11 +1300,11 @@ public class FuselagePart : Part
 		section.Trapezium = XmlUtil.ParseFloat((string)element.Attribute("trapezium"), section.Trapezium);
 		section.Thickness = XmlUtil.ParseFloat((string)element.Attribute("thickness"), section.Thickness);
 		section.Smooth = XmlUtil.ParseBool((string)element.Attribute("smoothing"), section.Smooth);
-		section.CornerRadii = XmlUtil.ParseFloat4((string)element.Attribute("cornerRadii"), section.CornerRadii);
-		section.CornerStretch = XmlUtil.ParseBool4((string)element.Attribute("cornerStretch"), section.CornerStretch);
-		section.CornerSamples = XmlUtil.ParseInt4((string)element.Attribute("cornerSamples"), section.CornerSamples);
-		section.EdgeCurvature = XmlUtil.ParseFloat4((string)element.Attribute("edgeCurvature"), section.EdgeCurvature);
-		section.EdgeSamples = XmlUtil.ParseInt4((string)element.Attribute("edgeSamples"), section.EdgeSamples);
+		section.CornerRadii = ParseXmlTuple4((string)element.Attribute("cornerRadii"), section.CornerRadii);
+		section.CornerStretch = ParseXmlTuple4((string)element.Attribute("cornerStretch"), section.CornerStretch);
+		section.CornerSamples = ParseXmlTuple4((string)element.Attribute("cornerSamples"), section.CornerSamples);
+		section.EdgeCurvature = ParseXmlTuple4((string)element.Attribute("edgeCurvature"), section.EdgeCurvature);
+		section.EdgeSamples = ParseXmlTuple4((string)element.Attribute("edgeSamples"), section.EdgeSamples);
 		ApplyCutString(ref section, (string)element.Attribute("cutting"));
 		section.Sanitize();
 		return section;
@@ -1336,12 +1336,12 @@ public class FuselagePart : Part
 	{
 		section.Sanitize();
 		element.SetAttributeValue("size", XmlUtil.FormatVector2(new Vector2(section.Width, section.Height)));
-		element.SetAttributeValue("cornerRadii", XmlUtil.FormatFloat4(section.CornerRadii));
-		element.SetAttributeValue("cornerStretch", XmlUtil.FormatBool4(section.CornerStretch));
-		element.SetAttributeValue("cornerSamples", XmlUtil.FormatInt4(section.CornerSamples));
+		element.SetAttributeValue("cornerRadii", XmlUtil.FormatFloat4(FormatXmlTuple4(section.CornerRadii)));
+		element.SetAttributeValue("cornerStretch", XmlUtil.FormatBool4(FormatXmlTuple4(section.CornerStretch)));
+		element.SetAttributeValue("cornerSamples", XmlUtil.FormatInt4(FormatXmlTuple4(section.CornerSamples)));
 		element.SetAttributeValue("trapezium", XmlUtil.FormatFloat(section.Trapezium));
-		element.SetAttributeValue("edgeCurvature", XmlUtil.FormatFloat4(section.EdgeCurvature));
-		element.SetAttributeValue("edgeSamples", XmlUtil.FormatInt4(section.EdgeSamples));
+		element.SetAttributeValue("edgeCurvature", XmlUtil.FormatFloat4(FormatXmlTuple4(section.EdgeCurvature)));
+		element.SetAttributeValue("edgeSamples", XmlUtil.FormatInt4(FormatXmlTuple4(section.EdgeSamples)));
 		element.SetAttributeValue("smoothing", section.Smooth ? "True" : "False");
 		element.SetAttributeValue("cutting", JCutString(section));
 		if (section.Thickness > 0f)
@@ -1497,6 +1497,55 @@ public class FuselagePart : Part
 		{
 			return enabled ? XmlUtil.FormatFloat(value) : string.Empty;
 		}
+	}
+
+	// 原版 JFuselage 的四元组从 Top 开始顺时针存储；本地截面从 Right 开始顺时针存储。 / Original JFuselage XML stores 4-tuples clockwise starting at Top, while the local section data starts at Right.
+	private static Float4Value ParseXmlTuple4(string value, Float4Value fallback)
+	{
+		return string.IsNullOrWhiteSpace(value)
+			? fallback
+			: new Float4Value(
+				XmlUtil.ParseFloat4(value, fallback).Y,
+				XmlUtil.ParseFloat4(value, fallback).Z,
+				XmlUtil.ParseFloat4(value, fallback).W,
+				XmlUtil.ParseFloat4(value, fallback).X);
+	}
+
+	private static Int4Value ParseXmlTuple4(string value, Int4Value fallback)
+	{
+		return string.IsNullOrWhiteSpace(value)
+			? fallback
+			: new Int4Value(
+				XmlUtil.ParseInt4(value, fallback).Y,
+				XmlUtil.ParseInt4(value, fallback).Z,
+				XmlUtil.ParseInt4(value, fallback).W,
+				XmlUtil.ParseInt4(value, fallback).X);
+	}
+
+	private static Bool4Value ParseXmlTuple4(string value, Bool4Value fallback)
+	{
+		return string.IsNullOrWhiteSpace(value)
+			? fallback
+			: new Bool4Value(
+				XmlUtil.ParseBool4(value, fallback).Y,
+				XmlUtil.ParseBool4(value, fallback).Z,
+				XmlUtil.ParseBool4(value, fallback).W,
+				XmlUtil.ParseBool4(value, fallback).X);
+	}
+
+	private static Float4Value FormatXmlTuple4(Float4Value value)
+	{
+		return new Float4Value(value.W, value.X, value.Y, value.Z);
+	}
+
+	private static Int4Value FormatXmlTuple4(Int4Value value)
+	{
+		return new Int4Value(value.W, value.X, value.Y, value.Z);
+	}
+
+	private static Bool4Value FormatXmlTuple4(Bool4Value value)
+	{
+		return new Bool4Value(value.W, value.X, value.Y, value.Z);
 	}
 
 	// 判断两个截面的外轮廓是否足够接近，从而共享接缝平滑和端盖省略逻辑。 / Check whether two sections have sufficiently similar outer seam shape to share smoothing and cap suppression.

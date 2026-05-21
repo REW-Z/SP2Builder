@@ -361,19 +361,21 @@ public class FuselagePartEditor : UnityEditor.Editor
 		EditorGUI.indentLevel--;
 	}
 
-   // 把单边切割画成纯滑块，值回到 0 时自动清除启用状态。 / Draw one cut side as a pure slider that automatically clears the enabled flag at zero.
+	// 把单边切割画成条件扩展范围的滑块；0 仍表示不切，只有真实轮廓超出名义外框时才开放 <0 或 >1 的输入。 / Draw one cut side with a conditionally extended range; zero still means uncut, while <0 or >1 become available only when the live outline requires it.
 	private static void DrawCutField(SerializedProperty enabledProperty, SerializedProperty valueProperty, string label, float minCutting, float maxCutting)
 	{
-     float currentValue = enabledProperty.boolValue ? Mathf.Clamp01(valueProperty.floatValue) : 0f;
+		float sliderMin = Mathf.Min(0f, minCutting);
+		float sliderMax = Mathf.Max(1f, maxCutting);
+		float currentValue = enabledProperty.boolValue ? Mathf.Clamp(valueProperty.floatValue, sliderMin, sliderMax) : 0f;
 		EditorGUILayout.BeginHorizontal();
-     float editedValue = EditorGUILayout.Slider(label, currentValue, 0f, 1f);
+		float editedValue = EditorGUILayout.Slider(label, currentValue, sliderMin, sliderMax);
 		editedValue = EditorGUILayout.FloatField(editedValue, GUILayout.Width(64f));
 		EditorGUILayout.EndHorizontal();
 
-       float clampedValue = Mathf.Clamp01(editedValue);
-		bool enabled = clampedValue > 0.0001f;
+		float clampedValue = Mathf.Clamp(editedValue, sliderMin, sliderMax);
+		bool enabled = Mathf.Abs(clampedValue) > 0.0001f;
 		enabledProperty.boolValue = enabled;
-        valueProperty.floatValue = enabled ? Mathf.Clamp(clampedValue, minCutting, maxCutting) : 0f;
+		valueProperty.floatValue = enabled ? Mathf.Clamp(clampedValue, minCutting, maxCutting) : 0f;
 	}
 
 	// 读取一个截面小组的折叠状态。 / Read the persisted foldout state for one section group.
