@@ -54,7 +54,7 @@ public class PartConnectionEndpoint
 }
 
 [ExecuteAlways]
-public abstract class Part : MonoBehaviour
+public abstract class Part : MonoBehaviour, ISerializationCallbackReceiver
 {
 	[SerializeField]
 	private int _partId;
@@ -94,6 +94,12 @@ public abstract class Part : MonoBehaviour
 	private bool _previewRefreshQueued;
 
 	private double _previewRefreshDueTime;
+
+	[NonSerialized]
+	private bool _suppressPreviewRefreshAfterDeserialize;
+
+	[NonSerialized]
+	private bool _clearDeserializeSuppressionQueued;
 
 	public int OrderIndex => _orderIndex;
 
@@ -241,7 +247,21 @@ public abstract class Part : MonoBehaviour
 	protected virtual void OnDisable()
 	{
 		Craft.UnregisterEditorUpdate(DelayedRefreshPreview);
+		EditorApplication.delayCall -= ClearDeserializePreviewSuppression;
 		_previewRefreshQueued = false;
+		_clearDeserializeSuppressionQueued = false;
+	}
+
+	// 序列化前无需写入额外状态。 / No extra state is written before Unity serialization.
+	public void OnBeforeSerialize()
+	{
+	}
+
+	// 标记场景反序列化后的首批编辑器回调，避免载入场景时立刻刷新保存好的预览网格。 / Mark the first editor callbacks after scene deserialization so saved preview meshes are not refreshed on load.
+	public void OnAfterDeserialize()
+	{
+		_suppressPreviewRefreshAfterDeserialize = true;
+		_clearDeserializeSuppressionQueued = false;
 	}
 
 	// 延迟解析预览所需组件，缺失时自动补齐。 / Lazily resolve required preview components, creating them if necessary.
@@ -270,6 +290,11 @@ public abstract class Part : MonoBehaviour
 	protected bool RequestCraftPreviewRebuild()
 	{
 		Craft craft = GetOwningCraft();
+		if (craft == null || craft.IsSceneLoadPreviewQueueSuppressed)
+		{
+			return true;
+		}
+
 		if (!craft.IsRebuildingPreviews)
 		{
 			craft.RebuildAllPreviews();
@@ -757,8 +782,13 @@ public abstract class Part : MonoBehaviour
 	// 把多次编辑器预览刷新请求合并成一次延迟执行。 / Coalesce editor preview refresh requests into a single delayed execution.
 	protected void QueuePreviewRefresh()
 	{
+		if (ShouldSuppressDeserializedPreviewRefresh())
+		{
+			return;
+		}
+
 		Craft craft = GetOwningCraft();
-		if (craft == null || craft.IsPreviewQueueSuppressed)
+		if (craft == null || craft.IsPreviewQueueSuppressed || craft.IsSceneLoadPreviewQueueSuppressed)
 		{
 			return;
 		}
@@ -791,6 +821,39 @@ public abstract class Part : MonoBehaviour
 
 		Craft craft = GetOwningCraft();
 		craft.QueuePreviewRebuildForPart(this, 0d, lightweight: this is FuselagePart);
+	}
+
+	// 判断当前是否处于 Unity 场景反序列化后的初始回调批次。 / Check whether the current callback belongs to the first batch after Unity scene deserialization.
+	private bool ShouldSuppressDeserializedPreviewRefresh()
+	{
+		if (!_suppressPreviewRefreshAfterDeserialize)
+		{
+			return false;
+		}
+
+		QueueClearDeserializePreviewSuppression();
+		return true;
+	}
+
+	// 把反序列化抑制延迟到本轮初始 OnEnable/OnValidate 之后清除。 / Clear deserialization suppression after the initial OnEnable/OnValidate batch.
+	private void QueueClearDeserializePreviewSuppression()
+	{
+		if (_clearDeserializeSuppressionQueued)
+		{
+			return;
+		}
+
+		_clearDeserializeSuppressionQueued = true;
+		EditorApplication.delayCall -= ClearDeserializePreviewSuppression;
+		EditorApplication.delayCall += ClearDeserializePreviewSuppression;
+	}
+
+	// 恢复正常预览排队，让后续 Inspector 编辑照常重建。 / Restore normal preview queuing for later inspector edits.
+	private void ClearDeserializePreviewSuppression()
+	{
+		EditorApplication.delayCall -= ClearDeserializePreviewSuppression;
+		_suppressPreviewRefreshAfterDeserialize = false;
+		_clearDeserializeSuppressionQueued = false;
 	}
 
 	// 保持 GameObject 名称与导入的零件身份一致。 / Keep the GameObject name aligned with the imported part identity.

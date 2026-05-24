@@ -27,8 +27,52 @@ public struct CraftThemeMaterial
 }
 
 [ExecuteAlways]
-public class Craft : MonoBehaviour
+public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 {
+	private const int CraftRootHierarchyNodeId = 0;
+
+	[Serializable]
+	private sealed class CraftHierarchyNodeRecord
+	{
+		public int NodeId;
+
+		public int ParentNodeId;
+
+		public int SiblingIndex;
+
+		public string Name;
+
+		public CraftHierarchyNodeRecord()
+		{
+		}
+
+		public CraftHierarchyNodeRecord(int nodeId, int parentNodeId, int siblingIndex, string name)
+		{
+			NodeId = nodeId;
+			ParentNodeId = parentNodeId;
+			SiblingIndex = siblingIndex;
+			Name = name ?? string.Empty;
+		}
+	}
+
+	[Serializable]
+	private sealed class CraftPartHierarchyAssignment
+	{
+		public int PartId;
+
+		public int ParentNodeId;
+
+		public CraftPartHierarchyAssignment()
+		{
+		}
+
+		public CraftPartHierarchyAssignment(int partId, int parentNodeId)
+		{
+			PartId = partId;
+			ParentNodeId = parentNodeId;
+		}
+	}
+
 	[SerializeField]
 	private string _sourceXmlPath;
 
@@ -44,6 +88,15 @@ public class Craft : MonoBehaviour
 	[SerializeField]
 	private bool _lockImportedPartsInScene = true;
 
+	[SerializeField]
+	private bool _renderWindowBayPreviewMeshes = true;
+
+	[SerializeField, HideInInspector]
+	private CraftHierarchyNodeRecord[] _partHierarchyNodes = Array.Empty<CraftHierarchyNodeRecord>();
+
+	[SerializeField, HideInInspector]
+	private CraftPartHierarchyAssignment[] _partHierarchyAssignments = Array.Empty<CraftPartHierarchyAssignment>();
+
 	private bool _isRebuildingPreviews;
 
 	private bool _isLightweightPreviewRebuild;
@@ -51,6 +104,12 @@ public class Craft : MonoBehaviour
 	private bool _suppressPreviewQueue;
 
 	private readonly Dictionary<int, Part> _partById = new Dictionary<int, Part>();
+
+	private readonly Dictionary<int, CraftHierarchyNodeRecord> _partHierarchyNodeById = new Dictionary<int, CraftHierarchyNodeRecord>();
+
+	private readonly Dictionary<int, int> _partHierarchyNodeIdByPartId = new Dictionary<int, int>();
+
+	private readonly Dictionary<int, Transform> _restoredPartHierarchyNodeById = new Dictionary<int, Transform>();
 
 	private bool _partIndexDirty = true;
 
@@ -100,6 +159,15 @@ public class Craft : MonoBehaviour
 
 	private bool _continueQueuedPreviewRebuildPending;
 
+	[NonSerialized]
+	private bool _suppressPreviewQueueAfterDeserialize;
+
+	[NonSerialized]
+	private bool _clearDeserializeSuppressionQueued;
+
+	[NonSerialized]
+	private bool _sceneLoadPreviewMaterialRestoreQueued;
+
 	public string SourceXmlPath => _sourceXmlPath;
 
 	public string LastExportPath => _lastExportPath;
@@ -110,9 +178,13 @@ public class Craft : MonoBehaviour
 
 	public bool IsPreviewQueueSuppressed => _suppressPreviewQueue;
 
+	public bool IsSceneLoadPreviewQueueSuppressed => ShouldSuppressDeserializedPreviewQueue();
+
 	public IReadOnlyList<CraftThemeMaterial> ThemeMaterials => _themeMaterials ?? Array.Empty<CraftThemeMaterial>();
 
 	public bool HasConnectionData => _hasConnectionData;
+
+	public bool RenderWindowBayPreviewMeshes => _renderWindowBayPreviewMeshes;
 
 	public int PaintMaterialCount
 	{
@@ -147,22 +219,52 @@ public class Craft : MonoBehaviour
 	{
       RegisterForEditorUpdate();
 		PreviewMaterialFactory.ClearThemedMaterialCache();
+		if (ShouldSuppressDeserializedPreviewQueue())
+		{
+			QueueSceneLoadPreviewMaterialRestore();
+			return;
+		}
+
 		QueuePreviewRebuild();
 	}
 
 	// 当 Craft 被禁用时，从共享编辑器 update 循环中移除自己。 / Remove this craft from the shared editor update loop when it is disabled.
 	private void OnDisable()
 	{
+		EditorApplication.delayCall -= ClearDeserializePreviewSuppression;
+		EditorApplication.delayCall -= ApplySceneLoadPreviewMaterials;
+		_clearDeserializeSuppressionQueued = false;
+		_sceneLoadPreviewMaterialRestoreQueued = false;
 		UnregisterFromEditorUpdate();
 	}
 
 	// 在编辑器里修改 Craft 序列化字段时排队整机预览重建。 / Queue a full craft preview rebuild when serialized Craft fields change in the editor.
 	private void OnValidate()
 	{
+		if (ShouldSuppressDeserializedPreviewQueue())
+		{
+			QueueSceneLoadPreviewMaterialRestore();
+			return;
+		}
+
 		if (!_isRebuildingPreviews)
 		{
 			QueuePreviewRebuild();
 		}
+	}
+
+	// 序列化前无需写入额外状态。 / No extra state is written before Unity serialization.
+	public void OnBeforeSerialize()
+	{
+	}
+
+	// 标记场景反序列化后的首批编辑器回调，避免载入场景时立刻重建保存好的预览网格。 / Mark the first editor callbacks after scene deserialization so saved preview meshes are not rebuilt on load.
+	public void OnAfterDeserialize()
+	{
+		_suppressPreviewQueueAfterDeserialize = true;
+		_clearDeserializeSuppressionQueued = false;
+		_sceneLoadPreviewMaterialRestoreQueued = false;
+		RebuildPartHierarchyLookup();
 	}
 
 	// 导入飞机 XML，并在当前 Craft 下生成对应的子零件对象。 / Import an aircraft XML file and instantiate child part GameObjects under this craft.
@@ -182,11 +284,13 @@ public class Craft : MonoBehaviour
 		name = (string)aircraftElement.Attribute("name") ?? "Craft";
 		_themeMaterials = ParseThemeMaterials(aircraftElement.Element("Theme"));
 		PreviewMaterialFactory.ClearThemedMaterialCache();
+		CapturePartHierarchySnapshot();
 
 		_suppressPreviewQueue = true;
 		try
 		{
 			ClearChildren();
+			CreateRestoredPartHierarchyNodes();
 
 			XElement partsElement = aircraftElement.Element("Assembly")?.Element("Parts");
 			if (partsElement == null)
@@ -214,6 +318,8 @@ public class Craft : MonoBehaviour
 	// 把当前子零件层级导出回飞机 XML。 / Export the current child part hierarchy back into aircraft XML.
 	public void ExportToXml(string xmlPath)
 	{
+		CapturePartHierarchySnapshot();
+
 		XDocument document = string.IsNullOrWhiteSpace(_rawAircraftXml)
 			? new XDocument(new XElement("Aircraft", new XElement("Assembly", new XElement("Parts"))))
 			: XDocument.Parse(_rawAircraftXml);
@@ -274,7 +380,7 @@ public class Craft : MonoBehaviour
 		ValidatePartIdAvailable(partId, ignoredPart: null);
 		Type componentType = ResolvePartComponentType((string)partElement.Attribute("partType"), partElement);
 		GameObject partObject = new GameObject();
-		partObject.transform.SetParent(transform, false);
+		partObject.transform.SetParent(ResolveImportedPartParent(partId), false);
 		Part part = (Part)partObject.AddComponent(componentType);
 		part.InitializeFromXml(partElement, orderIndex);
 		_partById[part.PartId] = part;
@@ -295,6 +401,22 @@ public class Craft : MonoBehaviour
 		PreviewMaterialFactory.ClearThemedMaterialCache();
 		RebuildAllPreviews();
 		SceneView.RepaintAll();
+	}
+
+	// 按 Craft 级显示开关刷新 Window/Bay 预览网格的渲染状态。 / Apply the craft-level render toggle to Window/Bay preview meshes.
+	public void ApplyWindowBayPreviewVisibility()
+	{
+		foreach (WindowPart window in GetComponentsInChildren<WindowPart>(includeInactive: true))
+		{
+			window?.ApplyPreviewVisibility();
+		}
+
+		foreach (BayPart bay in GetComponentsInChildren<BayPart>(includeInactive: true))
+		{
+			bay?.ApplyPreviewVisibility();
+		}
+
+		RepaintScene();
 	}
 
 	// 通过 XML 往返复制一个零件，并为副本分配新 id 和轻微偏移。 / Clone a part by round-tripping through XML, then assign a new id and slight offset.
@@ -580,6 +702,11 @@ public class Craft : MonoBehaviour
 	// 为一个零件及其受影响邻居排队预览重建。 / Queue a preview rebuild for one part and any impacted neighbors.
 	public void QueuePreviewRebuildForPart(Part changedPart, double delaySeconds = 0.12d, bool lightweight = true)
 	{
+		if (_suppressPreviewQueue || ShouldSuppressDeserializedPreviewQueue())
+		{
+			return;
+		}
+
 		if (changedPart == null)
 		{
 			QueuePreviewRebuild(delaySeconds);
@@ -593,6 +720,11 @@ public class Craft : MonoBehaviour
 	// 立即启动与某个零件相关的预览重建，必要时中断当前增量队列。 / Start an immediate preview rebuild for one part, canceling the current incremental queue if needed.
 	public void RebuildPreviewForPart(Part changedPart, bool lightweight = true)
 	{
+		if (_suppressPreviewQueue || ShouldSuppressDeserializedPreviewQueue())
+		{
+			return;
+		}
+
 		if (changedPart == null)
 		{
 			RebuildAllPreviews();
@@ -619,7 +751,7 @@ public class Craft : MonoBehaviour
 	// 记录下一次延迟重建的范围、质量和触发时间。 / Record the scope, quality, and due time for the next delayed preview rebuild.
 	private void QueuePreviewRebuildInternal(double delaySeconds, bool fullRebuild, bool lightweight)
 	{
-		if (_suppressPreviewQueue)
+		if (_suppressPreviewQueue || ShouldSuppressDeserializedPreviewQueue())
 		{
 			return;
 		}
@@ -895,6 +1027,95 @@ public class Craft : MonoBehaviour
 		_postRebuildSmoothingQueued = false;
 	}
 
+	// 判断当前是否处于 Unity 场景反序列化后的初始回调批次。 / Check whether the current callback belongs to the first batch after Unity scene deserialization.
+	private bool ShouldSuppressDeserializedPreviewQueue()
+	{
+		if (!_suppressPreviewQueueAfterDeserialize)
+		{
+			return false;
+		}
+
+		QueueClearDeserializePreviewSuppression();
+		return true;
+	}
+
+	// 把反序列化抑制延迟到本轮初始 OnEnable/OnValidate 之后清除。 / Clear deserialization suppression after the initial OnEnable/OnValidate batch.
+	private void QueueClearDeserializePreviewSuppression()
+	{
+		if (_clearDeserializeSuppressionQueued)
+		{
+			return;
+		}
+
+		_clearDeserializeSuppressionQueued = true;
+		EditorApplication.delayCall -= ClearDeserializePreviewSuppression;
+		EditorApplication.delayCall += ClearDeserializePreviewSuppression;
+	}
+
+	// 恢复正常预览排队，让后续 Inspector 编辑和导入流程照常重建。 / Restore normal preview queuing for later inspector edits and import flows.
+	private void ClearDeserializePreviewSuppression()
+	{
+		EditorApplication.delayCall -= ClearDeserializePreviewSuppression;
+		_suppressPreviewQueueAfterDeserialize = false;
+		_clearDeserializeSuppressionQueued = false;
+	}
+
+	// 场景载入时只恢复已保存预览网格上的材质，不重新生成任何 Mesh。 / Restore materials on saved preview meshes after scene load without regenerating any Mesh.
+	private void QueueSceneLoadPreviewMaterialRestore()
+	{
+		if (_sceneLoadPreviewMaterialRestoreQueued)
+		{
+			return;
+		}
+
+		_sceneLoadPreviewMaterialRestoreQueued = true;
+		EditorApplication.delayCall -= ApplySceneLoadPreviewMaterials;
+		EditorApplication.delayCall += ApplySceneLoadPreviewMaterials;
+	}
+
+	// 为已反序列化的预览重新绑定材质；几何仍使用场景中保存的 sharedMesh。 / Rebind materials for deserialized previews while keeping the saved sharedMesh intact.
+	private void ApplySceneLoadPreviewMaterials()
+	{
+		EditorApplication.delayCall -= ApplySceneLoadPreviewMaterials;
+		_sceneLoadPreviewMaterialRestoreQueued = false;
+		if (this == null || gameObject == null)
+		{
+			return;
+		}
+
+		foreach (FuselagePart fuselage in GetComponentsInChildren<FuselagePart>(includeInactive: true))
+		{
+			if (fuselage == null)
+			{
+				continue;
+			}
+
+			fuselage.RestorePreviewMaterialOnly();
+		}
+
+		foreach (WindowPart window in GetComponentsInChildren<WindowPart>(includeInactive: true))
+		{
+			if (window == null)
+			{
+				continue;
+			}
+
+			window.RestorePreviewMaterialOnly();
+		}
+
+		foreach (BayPart bay in GetComponentsInChildren<BayPart>(includeInactive: true))
+		{
+			if (bay == null)
+			{
+				continue;
+			}
+
+			bay.RestorePreviewMaterialOnly();
+		}
+
+		RepaintScene();
+	}
+
 	// 根据当前排队模式返回全量或局部受影响的零件集合。 / Return either all parts or just the impacted subset for the queued rebuild.
 	private Part[] GetQueuedPreviewParts()
 	{
@@ -1049,11 +1270,162 @@ public class Craft : MonoBehaviour
      _continueQueuedPreviewRebuildPending = pending;
 	}
 
+	// 记录当前 Craft 下的纯分类 Transform 层级，供下一次 XML 导入后还原。 / Capture pure grouping transforms under this Craft so the next XML import can restore them.
+	private void CapturePartHierarchySnapshot()
+	{
+		List<Part> parts = GetExportParts().ToList();
+		if (parts.Count == 0)
+		{
+			RebuildPartHierarchyLookup();
+			return;
+		}
+
+		List<CraftHierarchyNodeRecord> nodes = new List<CraftHierarchyNodeRecord>();
+		List<CraftPartHierarchyAssignment> assignments = new List<CraftPartHierarchyAssignment>();
+		foreach (Transform child in transform.Cast<Transform>().OrderBy(item => item.GetSiblingIndex()))
+		{
+			CapturePartHierarchyNode(child, CraftRootHierarchyNodeId, nodes, assignments);
+		}
+
+		_partHierarchyNodes = nodes.ToArray();
+		_partHierarchyAssignments = assignments.ToArray();
+		RebuildPartHierarchyLookup();
+	}
+
+	// 递归记录一个非 Part 节点；遇到 Part 时只写入 PartId 到父分类节点的映射。 / Recursively record one non-Part node; when a Part is reached, only map its PartId to the parent group.
+	private void CapturePartHierarchyNode(Transform current, int parentNodeId, List<CraftHierarchyNodeRecord> nodes, List<CraftPartHierarchyAssignment> assignments)
+	{
+		if (current == null)
+		{
+			return;
+		}
+
+		Part part = current.GetComponent<Part>();
+		if (part != null)
+		{
+			if (parentNodeId != CraftRootHierarchyNodeId && part.PartId > 0)
+			{
+				assignments.Add(new CraftPartHierarchyAssignment(part.PartId, parentNodeId));
+			}
+			return;
+		}
+
+		int nodeId = nodes.Count + 1;
+		nodes.Add(new CraftHierarchyNodeRecord(nodeId, parentNodeId, current.GetSiblingIndex(), current.name));
+		foreach (Transform child in current.Cast<Transform>().OrderBy(item => item.GetSiblingIndex()))
+		{
+			CapturePartHierarchyNode(child, nodeId, nodes, assignments);
+		}
+	}
+
+	// 把序列化的层级表重建成导入时 O(1) 查询的字典。 / Rebuild the serialized hierarchy tables into O(1) lookup dictionaries for import.
+	private void RebuildPartHierarchyLookup()
+	{
+		_partHierarchyNodeById.Clear();
+		_partHierarchyNodeIdByPartId.Clear();
+		foreach (CraftHierarchyNodeRecord node in _partHierarchyNodes ?? Array.Empty<CraftHierarchyNodeRecord>())
+		{
+			if (node == null || node.NodeId <= CraftRootHierarchyNodeId || _partHierarchyNodeById.ContainsKey(node.NodeId))
+			{
+				continue;
+			}
+
+			_partHierarchyNodeById.Add(node.NodeId, node);
+		}
+
+		foreach (CraftPartHierarchyAssignment assignment in _partHierarchyAssignments ?? Array.Empty<CraftPartHierarchyAssignment>())
+		{
+			if (assignment == null || assignment.PartId <= 0 || !_partHierarchyNodeById.ContainsKey(assignment.ParentNodeId))
+			{
+				continue;
+			}
+
+			_partHierarchyNodeIdByPartId[assignment.PartId] = assignment.ParentNodeId;
+		}
+	}
+
+	// 根据当前缓存先恢复所有分类节点，之后创建 Part 时即可直接挂到目标父节点。 / Restore all cached grouping nodes before Parts are recreated under their target parents.
+	private void CreateRestoredPartHierarchyNodes()
+	{
+		_restoredPartHierarchyNodeById.Clear();
+		EnsurePartHierarchyLookup();
+		foreach (CraftHierarchyNodeRecord node in _partHierarchyNodes ?? Array.Empty<CraftHierarchyNodeRecord>())
+		{
+			if (node == null)
+			{
+				continue;
+			}
+
+			ResolvePartHierarchyNode(node.NodeId);
+		}
+	}
+
+	// 按 PartId 查找导入时应使用的父节点；没有缓存记录则仍直接挂到 Craft。 / Resolve the parent transform for an imported PartId; uncached parts still go directly under the Craft.
+	private Transform ResolveImportedPartParent(int partId)
+	{
+		EnsurePartHierarchyLookup();
+		if (partId > 0 && _partHierarchyNodeIdByPartId.TryGetValue(partId, out int parentNodeId))
+		{
+			return ResolvePartHierarchyNode(parentNodeId);
+		}
+
+		return transform;
+	}
+
+	// 懒创建一个分类节点及其父节点，保证嵌套分类路径可以按需恢复。 / Lazily create one grouping node and its parent so nested category paths can be restored on demand.
+	private Transform ResolvePartHierarchyNode(int nodeId)
+	{
+		if (nodeId <= CraftRootHierarchyNodeId)
+		{
+			return transform;
+		}
+
+		if (_restoredPartHierarchyNodeById.TryGetValue(nodeId, out Transform restored) && restored != null)
+		{
+			return restored;
+		}
+
+		EnsurePartHierarchyLookup();
+		if (!_partHierarchyNodeById.TryGetValue(nodeId, out CraftHierarchyNodeRecord record) || record == null)
+		{
+			return transform;
+		}
+
+		Transform parent = record.ParentNodeId > CraftRootHierarchyNodeId && record.ParentNodeId != record.NodeId
+			? ResolvePartHierarchyNode(record.ParentNodeId)
+			: transform;
+		GameObject groupObject = new GameObject(string.IsNullOrWhiteSpace(record.Name) ? "Group" : record.Name);
+		Transform groupTransform = groupObject.transform;
+		groupTransform.SetParent(parent, false);
+		groupTransform.localPosition = Vector3.zero;
+		groupTransform.localRotation = Quaternion.identity;
+		groupTransform.localScale = Vector3.one;
+		if (record.SiblingIndex >= 0)
+		{
+			groupTransform.SetSiblingIndex(Mathf.Min(record.SiblingIndex, Mathf.Max(0, parent.childCount - 1)));
+		}
+
+		_restoredPartHierarchyNodeById[nodeId] = groupTransform;
+		return groupTransform;
+	}
+
+	// 确保延迟恢复前已经从序列化数组重建查询字典。 / Ensure lookup dictionaries are rebuilt from serialized arrays before lazy restoration.
+	private void EnsurePartHierarchyLookup()
+	{
+		if (_partHierarchyNodeById.Count > 0 || ((_partHierarchyNodes?.Length ?? 0) == 0 && (_partHierarchyAssignments?.Length ?? 0) == 0))
+		{
+			return;
+		}
+
+		RebuildPartHierarchyLookup();
+	}
+
 	// 导入新飞机前先清空旧的预览子对象。 / Remove all existing preview children before importing a new aircraft.
 	private void ClearChildren()
 	{
 		_partById.Clear();
 		_partIndexDirty = true;
+		_restoredPartHierarchyNodeById.Clear();
 		foreach (Transform child in transform.Cast<Transform>().ToArray())
 		{
 			DestroyImmediate(child.gameObject);
@@ -1207,10 +1579,7 @@ public class Craft : MonoBehaviour
 	private List<ExportConnection> CollectExportConnections()
 	{
 		Dictionary<int, ExportConnection> byId = new Dictionary<int, ExportConnection>();
-		List<Part> parts = GetComponentsInChildren<Part>(includeInactive: true)
-			.Where(item => item.transform.parent == transform)
-			.OrderBy(item => item.OrderIndex)
-			.ToList();
+		List<Part> parts = GetExportParts().ToList();
 
 		foreach (Part part in parts)
 		{

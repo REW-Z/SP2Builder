@@ -1,6 +1,8 @@
 .vs/*
 Simulation/*
 GameExample/*
+Documention/*
+Tools/*
 Library/*
 Packages/*
 Logs/*
@@ -9,6 +11,5 @@ ProjectSettings/*
 Temp/*
 Assets/Scenes/Crafts/*
 Assets/Crafts/*
-PROJECT_ARCHITECTURE.md
 *.csproj
 *.slnx

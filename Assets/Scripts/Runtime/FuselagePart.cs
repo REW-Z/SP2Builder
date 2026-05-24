@@ -115,6 +115,22 @@ public class FuselagePart : Part
 		MarkStateXmlDirty();
 	}
 
+	// 只恢复预览材质，保留当前 MeshFilter.sharedMesh 不变。 / Restore only the preview material while keeping the current MeshFilter.sharedMesh unchanged.
+	public void RestorePreviewMaterialOnly()
+	{
+		if (_meshRenderer == null)
+		{
+			_meshRenderer = GetComponent<MeshRenderer>();
+		}
+
+		if (_meshRenderer == null)
+		{
+			return;
+		}
+
+		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
+	}
+
 	// 重建机身预览网格，包括端盖、切割结果和共享材质。 / Rebuild the fuselage preview mesh, including end caps, cuts, and shared material.
 	public override void RefreshPreview()
     {

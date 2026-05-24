@@ -602,6 +602,7 @@ public class PartEditor : UnityEditor.Editor
 			PartInspectorUtility.QueuePreviewRefresh(selectedPart);
 		}
 
+		PartInspectorUtility.DrawCarverRefreshButton(selectedPart);
 		PartInspectorUtility.DrawMaterialEditor(selectedPart);
 		PartInspectorUtility.DrawPartActions(selectedPart);
 		PartConnectionEditorUtility.DrawConnectionEditor(selectedPart);
@@ -693,6 +694,8 @@ internal class RawXmlTextEditorWindow : EditorWindow
 
 internal static class PartInspectorUtility
 {
+	private const string CloneSelectedMenuPath = "Tools/SP2 Craft Editor/Part/Clone Selected #b";
+
 	public static void DrawPartIdentity(Part part)
 	{
 		if (part == null)
@@ -753,6 +756,45 @@ internal static class PartInspectorUtility
 		EditorGUILayout.EndHorizontal();
 	}
 
+	[MenuItem(CloneSelectedMenuPath)]
+	private static void CloneSelectedPart()
+	{
+		if (!TryGetSelectedPart(out Part part, out Craft craft))
+		{
+			return;
+		}
+
+		ClonePart(craft, part);
+	}
+
+	[MenuItem(CloneSelectedMenuPath, true)]
+	private static bool ValidateCloneSelectedPart()
+	{
+		return TryGetSelectedPart(out _, out _);
+	}
+
+	public static void DrawCarverRefreshButton(Part part)
+	{
+		if (!(part is WindowPart) && !(part is BayPart))
+		{
+			return;
+		}
+
+		Craft craft = part.GetComponentInParent<Craft>();
+		if (craft == null)
+		{
+			return;
+		}
+
+		EditorGUILayout.Space(8f);
+		if (GUILayout.Button("Refresh Affected Fuselage Cuts", GUILayout.Height(24f)))
+		{
+			craft.RebuildPreviewForPart(part, lightweight: false);
+			EditorUtility.SetDirty(craft);
+			SceneView.RepaintAll();
+		}
+	}
+
 	public static void DrawRawXmlFoldout(SerializedObject owner, string propertyName, string label)
 	{
 		if (owner == null || string.IsNullOrWhiteSpace(propertyName))
@@ -797,6 +839,11 @@ internal static class PartInspectorUtility
 
 	private static void ClonePart(Craft craft, Part source)
 	{
+		if (craft == null || source == null)
+		{
+			return;
+		}
+
 		Part clone = craft.ClonePart(source);
 		if (clone == null)
 		{
@@ -807,6 +854,14 @@ internal static class PartInspectorUtility
 		EditorUtility.SetDirty(craft);
 		Selection.activeGameObject = clone.gameObject;
 		SceneView.RepaintAll();
+	}
+
+	private static bool TryGetSelectedPart(out Part part, out Craft craft)
+	{
+		GameObject activeGameObject = Selection.activeGameObject;
+		part = activeGameObject != null ? activeGameObject.GetComponent<Part>() : null;
+		craft = part != null ? part.GetComponentInParent<Craft>() : null;
+		return part != null && craft != null;
 	}
 
 	private static void SymmetricCopyPart(Craft craft, Part source)

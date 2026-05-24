@@ -190,11 +190,22 @@ public struct FuselageSectionSettings
 	// 把截面值钳制到运行时安全范围内，并恢复未序列化的派生字段。 / Clamp section values into safe runtime ranges and restore nonserialized derived fields.
 	public void Sanitize()
 	{
-		Sanitize(DefaultMinimumDimension);
+		Sanitize(DefaultMinimumDimension, preserveInterpolatedCornerStretch: false);
 	}
 
 	// 在保持其他字段钳制逻辑不变的前提下，允许调用方指定更小的几何最小尺寸。 / Apply the usual section clamping while letting the caller choose a smaller minimum dimension when needed.
 	public void Sanitize(float minimumDimension)
+	{
+		Sanitize(minimumDimension, preserveInterpolatedCornerStretch: false);
+	}
+
+	// 保留原版 SectionParams 插值产生的连续 stretch 值。 / Keep the continuous stretch values produced by original-style SectionParams interpolation.
+	public void SanitizeInterpolated(float minimumDimension)
+	{
+		Sanitize(minimumDimension, preserveInterpolatedCornerStretch: true);
+	}
+
+	private void Sanitize(float minimumDimension, bool preserveInterpolatedCornerStretch)
 	{
 		const float cornerStretchEpsilon = 0.0001f;
 		const float cutEpsilon = 0.0001f;
@@ -211,22 +222,10 @@ public struct FuselageSectionSettings
 		CornerStretchAmount.Y = Mathf.Clamp01(CornerStretchAmount.Y);
 		CornerStretchAmount.Z = Mathf.Clamp01(CornerStretchAmount.Z);
 		CornerStretchAmount.W = Mathf.Clamp01(CornerStretchAmount.W);
-		if (CornerStretch.X && CornerStretchAmount.X <= cornerStretchEpsilon)
-		{
-			CornerStretchAmount.X = 1f;
-		}
-		if (CornerStretch.Y && CornerStretchAmount.Y <= cornerStretchEpsilon)
-		{
-			CornerStretchAmount.Y = 1f;
-		}
-		if (CornerStretch.Z && CornerStretchAmount.Z <= cornerStretchEpsilon)
-		{
-			CornerStretchAmount.Z = 1f;
-		}
-		if (CornerStretch.W && CornerStretchAmount.W <= cornerStretchEpsilon)
-		{
-			CornerStretchAmount.W = 1f;
-		}
+		NormalizeCornerStretchAmount(ref CornerStretchAmount.X, CornerStretch.X, preserveInterpolatedCornerStretch, cornerStretchEpsilon);
+		NormalizeCornerStretchAmount(ref CornerStretchAmount.Y, CornerStretch.Y, preserveInterpolatedCornerStretch, cornerStretchEpsilon);
+		NormalizeCornerStretchAmount(ref CornerStretchAmount.Z, CornerStretch.Z, preserveInterpolatedCornerStretch, cornerStretchEpsilon);
+		NormalizeCornerStretchAmount(ref CornerStretchAmount.W, CornerStretch.W, preserveInterpolatedCornerStretch, cornerStretchEpsilon);
 		EdgeCurvature.X = Mathf.Clamp01(EdgeCurvature.X);
 		EdgeCurvature.Y = Mathf.Clamp01(EdgeCurvature.Y);
 		EdgeCurvature.Z = Mathf.Clamp01(EdgeCurvature.Z);
@@ -250,6 +249,25 @@ public struct FuselageSectionSettings
 		EdgeSamples.Y = Mathf.Max(0, EdgeSamples.Y == 0 ? 7 : EdgeSamples.Y);
 		EdgeSamples.Z = Mathf.Max(0, EdgeSamples.Z == 0 ? 7 : EdgeSamples.Z);
 		EdgeSamples.W = Mathf.Max(0, EdgeSamples.W == 0 ? 7 : EdgeSamples.W);
+	}
+
+	// 对真实端面清理旧的 stretch 残留，对插值截面保留 0..1 过渡。 / Clear stale stretch on real sections while preserving 0..1 transition values on interpolated sections.
+	private static void NormalizeCornerStretchAmount(ref float stretchAmount, bool stretched, bool preserveInterpolatedCornerStretch, float epsilon)
+	{
+		if (stretched)
+		{
+			if (stretchAmount <= epsilon)
+			{
+				stretchAmount = 1f;
+			}
+
+			return;
+		}
+
+		if (!preserveInterpolatedCornerStretch || stretchAmount > 0.5f)
+		{
+			stretchAmount = 0f;
+		}
 	}
 
 	// 按原游戏相同的“共享半径 + stretch 模式”模型在两个截面之间插值。 / Interpolate between two sections using the same shared radius-plus-stretch model as the original game.
@@ -283,7 +301,7 @@ public struct FuselageSectionSettings
 				(int)Mathf.Lerp(a.EdgeSamples.Z, b.EdgeSamples.Z, t),
 				(int)Mathf.Lerp(a.EdgeSamples.W, b.EdgeSamples.W, t))
 		};
-		result.Sanitize();
+		result.SanitizeInterpolated(DefaultMinimumDimension);
 		return result;
 	}
 }
@@ -841,7 +859,7 @@ internal static class FuselageGeometry
 	// 对局部插值结果做一次带最小尺寸参数的钳制。 / Sanitize an interpolated section using the requested minimum geometric dimension.
 	private static FuselageSectionSettings SanitizeSection(FuselageSectionSettings section, float minimumDimension)
 	{
-		section.Sanitize(minimumDimension);
+		section.SanitizeInterpolated(minimumDimension);
 		return section;
 	}
 
@@ -959,7 +977,7 @@ internal static class FuselageGeometry
 
 	private static RingProfile BuildSectionRing(FuselageSectionSettings section, Vector3 center, float minimumDimension)
 	{
-		section.Sanitize(minimumDimension);
+		section.SanitizeInterpolated(minimumDimension);
 		Float4Value clampedCornerRadii = ClampCornerRadii(section);
 		Vector2[] unscaledCorners = new Vector2[4];
 		Vector2[] corners = new Vector2[4];
@@ -1331,7 +1349,7 @@ internal static class FuselageGeometry
 		inner.Width = Mathf.Max(minimumDimension, section.Width * scale);
 		inner.Height = Mathf.Max(minimumDimension, section.Height * scale);
 		inner.Thickness = 0f;
-		inner.Sanitize(minimumDimension);
+		inner.SanitizeInterpolated(minimumDimension);
 		return inner;
 	}
 

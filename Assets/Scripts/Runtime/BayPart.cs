@@ -78,6 +78,40 @@ public class BayPart : Part, IFuselageCarver
         MarkStateXmlDirty();
     }
 
+	// 只恢复线框预览材质，保留当前 MeshFilter.sharedMesh 不变。 / Restore only the wireframe preview material while keeping the current MeshFilter.sharedMesh unchanged.
+	public void RestorePreviewMaterialOnly()
+	{
+		if(_meshRenderer == null)
+		{
+			_meshRenderer = GetComponent<MeshRenderer>();
+		}
+
+		if(_meshRenderer == null)
+		{
+			return;
+		}
+
+		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetBayMaterial(this);
+		ApplyPreviewVisibility();
+	}
+
+	// 按 Craft 级开关显示或隐藏 Bay 线框预览网格。 / Show or hide this Bay wire preview mesh using the craft-level toggle.
+	public void ApplyPreviewVisibility()
+	{
+		if(_meshRenderer == null)
+		{
+			_meshRenderer = GetComponent<MeshRenderer>();
+		}
+
+		if(_meshRenderer == null)
+		{
+			return;
+		}
+
+		Craft craft = GetOwningCraft();
+		_meshRenderer.enabled = craft == null || craft.RenderWindowBayPreviewMeshes;
+	}
+
 	// 刷新 Bay 在编辑器里的线框预览。 / Refresh the bay wireframe preview in the editor.
     public override void RefreshPreview()
     {
@@ -92,6 +126,7 @@ public class BayPart : Part, IFuselageCarver
         DestroyOwnedObject(_meshFilter.sharedMesh);
         _meshFilter.sharedMesh = FuselageCarverUtility.BuildWireframeMesh(BuildOutline(), GetCutDepth(), "ProceduralBayWire");
         _meshRenderer.sharedMaterial = PreviewMaterialFactory.GetBayMaterial(this);
+        ApplyPreviewVisibility();
     }
 
 	// 构建用于机身布尔切割的 Bay 闭体 PreviewMeshData。 / Build the closed Bay PreviewMeshData used for fuselage cutting booleans.

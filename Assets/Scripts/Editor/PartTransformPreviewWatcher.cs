@@ -1,46 +1,16 @@
 using UnityEditor;
-using UnityEngine;
 
 
 [InitializeOnLoad]
 internal static class PartTransformPreviewWatcher
 {
-	private const double TransformPreviewDelaySeconds = 0.04d;
-
 	static PartTransformPreviewWatcher()
 	{
 		EditorApplication.update -= WatchSelectedPartTransforms;
-		EditorApplication.update += WatchSelectedPartTransforms;
 	}
 
+	// Transform 选择和移动不再触发网格重建；属性 Inspector 和手动按钮会显式排队。 / Transform selection and movement no longer rebuild meshes; inspector edits and manual buttons queue explicitly.
 	private static void WatchSelectedPartTransforms()
 	{
-		if (Selection.transforms == null || Selection.transforms.Length == 0)
-		{
-			return;
-		}
-
-		foreach (Transform transform in Selection.transforms)
-		{
-			if (transform == null || !transform.hasChanged)
-			{
-				continue;
-			}
-
-			Part part = transform.GetComponent<Part>();
-			if (part == null)
-			{
-				transform.hasChanged = false;
-				continue;
-			}
-
-			Craft craft = part.GetComponentInParent<Craft>();
-			bool lightweight = part is FuselagePart || part is IFuselageCarver;
-			craft.QueuePreviewRebuildForPart(part, TransformPreviewDelaySeconds, lightweight);
-			EditorUtility.SetDirty(craft);
-
-			EditorUtility.SetDirty(part);
-			transform.hasChanged = false;
-		}
 	}
 }
