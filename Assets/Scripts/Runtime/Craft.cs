@@ -650,7 +650,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 	}
 
 	// 把一个零件的连接端点同步成整个 Craft 中的双向连接图。 / Synchronize one part's endpoints into the craft-wide reciprocal connection graph.
-	public void SynchronizeConnectionsFrom(Part source)
+	public void SynchronizeConnectionsFrom(Part source, bool removeStaleReciprocals = true)
 	{
 		if (source == null)
 		{
@@ -659,18 +659,21 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 		source.EnsureConnectionIds(AllocateConnectionId());
 
-		foreach (Part part in GetComponentsInChildren<Part>(includeInactive: true))
+		if (removeStaleReciprocals)
 		{
-			if (part == source)
+			foreach (Part part in GetComponentsInChildren<Part>(includeInactive: true))
 			{
-				continue;
-			}
+				if (part == source)
+				{
+					continue;
+				}
 
-			List<PartConnectionEndpoint> expectedReciprocals = source.ConnectionEndpoints
-				.Where(endpoint => endpoint.ConnectionId > 0 && endpoint.ConnectedPartId == part.PartId)
-				.Select(endpoint => endpoint.CreateReciprocal(source.PartId))
-				.ToList();
-			part.RemoveStaleReciprocalConnections(source.PartId, expectedReciprocals);
+				List<PartConnectionEndpoint> expectedReciprocals = source.ConnectionEndpoints
+					.Where(endpoint => endpoint.ConnectionId > 0 && endpoint.ConnectedPartId == part.PartId)
+					.Select(endpoint => endpoint.CreateReciprocal(source.PartId))
+					.ToList();
+				part.RemoveStaleReciprocalConnections(source.PartId, expectedReciprocals);
+			}
 		}
 
 		foreach (PartConnectionEndpoint endpoint in source.ConnectionEndpoints)

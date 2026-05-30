@@ -10,6 +10,8 @@ UserSettings/*
 ProjectSettings/*
 Temp/*
 Assets/Scenes/Crafts/*
+Assets/TextMesh Pro/*
+Assets/Plugins/*
 Assets/Crafts/*
 *.csproj
 *.slnx

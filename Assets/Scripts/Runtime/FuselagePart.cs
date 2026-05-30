@@ -538,6 +538,82 @@ public class FuselagePart : Part
 		return true;
 	}
 
+	// 判断当前机身是否可作为线性圆筒工具的输入，Cone 会改变腰切语义。 / Check whether this fuselage can be edited by linear cylinder tools; cone styles change waist-slicing semantics.
+	public bool SupportsLinearCylinderTools()
+	{
+		return !IsConeStyle();
+	}
+
+	// 返回指定端面的世界空间中心点，供编辑器桥接工具使用。 / Return one end slice center in world space for editor bridge tools.
+	public Vector3 GetEndWorldPosition(bool front)
+	{
+		return GetSliceWorldPosition(front);
+	}
+
+	// 返回机身本地原点在世界空间的位置，框架工具用它作为零厚度圆面中心。 / Return the fuselage origin in world space, used as the zero-thickness frame center.
+	public Vector3 GetCenterWorldPosition()
+	{
+		return transform.TransformPoint(Vector3.zero);
+	}
+
+	// 返回指定端面的世界空间法线，供编辑器桥接工具选择朝向。 / Return one end slice normal in world space so editor bridge tools can pick facing ends.
+	public Vector3 GetEndWorldNormal(bool front)
+	{
+		return GetSliceWorldNormal(front);
+	}
+
+	// 返回指定端面的截面副本，供新建桥接段或切分段复用。 / Return a copy of one end section for newly bridged or sliced segments.
+	public FuselageSectionSettings GetEndSectionSettings(bool front)
+	{
+		CanonicalizeSections();
+		return GetEndSection(front);
+	}
+
+	// 把当前机身配置成 source 在 [startRatio,endRatio] 上的一段。 / Configure this fuselage as a span of source between startRatio and endRatio.
+	public void ConfigureAsSpanOf(FuselagePart source, float startRatio, float endRatio)
+	{
+		if (source == null)
+		{
+			return;
+		}
+
+		source.CanonicalizeSections();
+		float start = Mathf.Clamp01(Mathf.Min(startRatio, endRatio));
+		float end = Mathf.Clamp01(Mathf.Max(startRatio, endRatio));
+		float span = Mathf.Max(0.0001f, end - start);
+		Vector3 sourceOffset = source._offset;
+		FuselageSectionSettings sourceRearSection = source._rearSection;
+		FuselageSectionSettings sourceFrontSection = source._frontSection;
+		Vector3 localStart = sourceOffset * (start - 0.5f);
+		Vector3 localEnd = sourceOffset * (end - 0.5f);
+		Vector3 localCenter = (localStart + localEnd) * 0.5f;
+
+		transform.localRotation = source.transform.localRotation;
+		transform.localScale = source.transform.localScale;
+		transform.localPosition = source.transform.localPosition
+			+ source.transform.localRotation * Vector3.Scale(localCenter, source.transform.localScale);
+
+		_serializationMode = source._serializationMode;
+		_visualStyle = source._visualStyle;
+		_noseconeRoundness = source._noseconeRoundness;
+		_glass = source._glass;
+		_offset = sourceOffset * span;
+		_rearSection = FuselageSectionSettings.Lerp(sourceRearSection, sourceFrontSection, start);
+		_frontSection = FuselageSectionSettings.Lerp(sourceRearSection, sourceFrontSection, end);
+		CanonicalizeSections();
+		MarkStateXmlDirty();
+	}
+
+	// 直接写入桥接段的 offset 和两端截面。 / Assign the offset and end sections for a bridge fuselage.
+	public void ConfigureBridgeShape(Vector3 offset, FuselageSectionSettings rearSection, FuselageSectionSettings frontSection)
+	{
+		_offset = offset;
+		_rearSection = rearSection;
+		_frontSection = frontSection;
+		CanonicalizeSections();
+		MarkStateXmlDirty();
+	}
+
 	// 返回前后端和四个中段侧面的 attach point 局部坐标。 / Return the local attach-point positions for both ends and the four mid-section sides.
 	public override Vector3 GetAttachPointLocalPosition(int attachPointId)
 	{

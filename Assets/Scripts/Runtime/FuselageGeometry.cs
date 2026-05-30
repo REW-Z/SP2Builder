@@ -7,7 +7,7 @@ using UnityEngine;
 [Serializable]
 public struct FuselageSectionSettings
 {
-	private const float DefaultMinimumDimension = 0.01f;
+	internal const float DefaultMinimumDimension = 0.001f;
 
 	public float Width;
 
@@ -308,7 +308,9 @@ public struct FuselageSectionSettings
 
 internal static class FuselageGeometry
 {
-	private const float Epsilon = 0.0001f;
+	private const float Epsilon = 0.00001f;
+
+	private const float TriangleAreaEpsilon = 0.00000001f;
 
 	private const float ConeMinimumDimension = 0.00001f;
 
@@ -812,7 +814,7 @@ internal static class FuselageGeometry
 	// 对局部插值结果做一次正常截面钳制，避免后续 ring 构造吃到非法参数。 / Sanitize an interpolated section before it is emitted into a renderable ring.
 	private static FuselageSectionSettings SanitizeSection(FuselageSectionSettings section)
 	{
-		return SanitizeSection(section, 0.01f);
+		return SanitizeSection(section, FuselageSectionSettings.DefaultMinimumDimension);
 	}
 
 	// 构造原版 sharp cone zero-size tip 等价的 4 个重合 sharp 点。 / Build the four coincident sharp points that the original sharp-cone zero-size tip section effectively emits.
@@ -972,7 +974,7 @@ internal static class FuselageGeometry
 
 	private static RingProfile BuildSectionRing(FuselageSectionSettings section, Vector3 center)
 	{
-		return BuildSectionRing(section, center, 0.01f);
+		return BuildSectionRing(section, center, FuselageSectionSettings.DefaultMinimumDimension);
 	}
 
 	private static RingProfile BuildSectionRing(FuselageSectionSettings section, Vector3 center, float minimumDimension)
@@ -1339,7 +1341,7 @@ internal static class FuselageGeometry
 	// 当几何 inset 对薄壁 hollow 截面失败时，退化成简单缩放的内环。 / Build a simple scaled inner loop when geometric insetting fails for thin hollow sections.
 	private static FuselageSectionSettings BuildInnerSectionSettings(FuselageSectionSettings section)
 	{
-		return BuildInnerSectionSettings(section, 0.01f);
+		return BuildInnerSectionSettings(section, FuselageSectionSettings.DefaultMinimumDimension);
 	}
 
 	private static FuselageSectionSettings BuildInnerSectionSettings(FuselageSectionSettings section, float minimumDimension)
@@ -1356,7 +1358,7 @@ internal static class FuselageGeometry
 	// 原版 Hollow 直接生成独立的 inner section；这里保持同一主路径，不再退回旧的几何 inset fallback。 / Original Hollow generates a dedicated inner section directly; keep the runtime on that same path instead of falling back to the old geometric inset flow.
 	private static bool TryBuildInnerRing(FuselageSectionSettings section, Vector3 center, RingProfile outerRing, out RingProfile innerRing)
 	{
-		return TryBuildInnerRing(section, center, outerRing, 0.01f, out innerRing);
+		return TryBuildInnerRing(section, center, outerRing, FuselageSectionSettings.DefaultMinimumDimension, out innerRing);
 	}
 
 	private static bool TryBuildInnerRing(FuselageSectionSettings section, Vector3 center, RingProfile outerRing, float minimumDimension, out RingProfile innerRing)
@@ -1647,7 +1649,7 @@ internal static class FuselageGeometry
 			return;
 		}
 
-		if (Vector3.Cross(vb - va, vc - va).sqrMagnitude <= Epsilon * Epsilon)
+		if (Vector3.Cross(vb - va, vc - va).sqrMagnitude <= TriangleAreaEpsilon * TriangleAreaEpsilon)
 		{
 			return;
 		}

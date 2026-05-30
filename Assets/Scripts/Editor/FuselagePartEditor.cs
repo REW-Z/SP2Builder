@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Xml.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -30,17 +31,41 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 	private const float AutoConnectMaxDistanceSqr = AutoConnectMaxDistance * AutoConnectMaxDistance;
 
+	private const float MinimumSliceRatio = 0.001f;
+
+	private const float BridgeMinimumDistance = 0.0001f;
+
+	private const float BridgeNormalWarningDot = 0.98f;
+
+	private const float GeneratedFrameLength = 0.01f;
+
 	private const string AutoConnectSelectedMenuPath = "Tools/SP2 Craft Editor/Fuselage/Auto Connect Selected #t";
 
 	private const string SnapSelectedRearMenuPath = "Tools/SP2 Craft Editor/Fuselage/Snap Selected Rear #q";
 
 	private const string SnapSelectedFrontMenuPath = "Tools/SP2 Craft Editor/Fuselage/Snap Selected Front #e";
 
+	private const string SliceSelectedByRatioMenuPath = "Tools/SP2 Craft Editor/Fuselage/Slice Selected By Ratio...";
+
+	private const string BridgeSelectedFramesMenuPath = "Tools/SP2 Craft Editor/Fuselage/Bridge Selected Frames #b";
+
+	private const string GenerateSelectedEndFramesMenuPath = "Tools/SP2 Craft Editor/Fuselage/Generate End Frames From Selected";
+
 	private bool _showRearSection = true;
 
 	private bool _showFrontSection = true;
 
 	private static readonly Dictionary<string, bool> SectionFoldouts = new Dictionary<string, bool>();
+
+	private static readonly Dictionary<string, GUIStyle> ColoredStyleCache = new Dictionary<string, GUIStyle>();
+
+	private static readonly Color BaseInfoLabelColor = new Color(0.34f, 0.78f, 0.36f);
+
+	private static readonly Color CornerLabelColor = new Color(1f, 0.78f, 0.18f);
+
+	private static readonly Color EdgeLabelColor = new Color(0.28f, 0.62f, 1f);
+
+	private static readonly Color SliceLabelColor = new Color(1f, 0.34f, 0.28f);
 
 	// 绘制机身自定义 Inspector，并在数值变化时触发预览重建。 / Draw the custom fuselage inspector and trigger preview rebuilds when values change.
 	public override void OnInspectorGUI()
@@ -60,7 +85,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 			EditorGUILayout.Slider(serializedObject.FindProperty("_noseconeRoundness"), 0f, 1f);
 		}
 		EditorGUILayout.PropertyField(serializedObject.FindProperty("_glass"));
-		EditorGUILayout.PropertyField(serializedObject.FindProperty("_offset"), new GUIContent("Length / Rise / Run"));
+		EditorGUILayout.PropertyField(serializedObject.FindProperty("_offset"), new GUIContent("Run / Rise / Length"));
 
 		EditorGUILayout.Space(8f);
 		_showRearSection = EditorGUILayout.BeginFoldoutHeaderGroup(_showRearSection, "Rear Section");
@@ -245,6 +270,118 @@ public class FuselagePartEditor : UnityEditor.Editor
 		return TryGetSingleSelectedFuselage(out _);
 	}
 
+	[MenuItem(SliceSelectedByRatioMenuPath)]
+	// 打开比例横切 Wizard，比例表示从 Rear 到 Front 的切点位置。 / Open the ratio slicing wizard; the ratio is measured from rear to front.
+	private static void OpenSliceSelectedByRatioWizard()
+	{
+		SliceRatioWizard.Open();
+	}
+
+	[MenuItem(SliceSelectedByRatioMenuPath, true)]
+	private static bool ValidateOpenSliceSelectedByRatioWizard()
+	{
+		return TryGetSingleSelectedFuselage(out _);
+	}
+
+	[MenuItem(BridgeSelectedFramesMenuPath)]
+	// 在两个选中的框架机身之间创建一段桥接机身。 / Create one bridge fuselage between the selected frame fuselages.
+	private static void BridgeSelectedFrames()
+	{
+		if (!TryGetSelectedFuselagePair(out FuselagePart first, out FuselagePart second, out Craft craft))
+		{
+			return;
+		}
+
+		if (!first.SupportsLinearCylinderTools() || !second.SupportsLinearCylinderTools())
+		{
+			Debug.LogWarning("Bridge only supports non-cone fuselage cylinders.", craft);
+			return;
+		}
+
+		if (!TryResolveBridgeEnds(
+			first,
+			second,
+			out FuselagePart rearFrame,
+			out bool rearFrameFront,
+			out FuselagePart frontFrame,
+			out bool frontFrameFront,
+			out Vector3 rearPosition,
+			out Vector3 frontPosition,
+			out Vector3 bridgeForward))
+		{
+			Debug.LogWarning("Selected fuselage frames are too close to create a bridge.", craft);
+			return;
+		}
+
+		FuselagePart bridge = CreateFuselageClone(craft, rearFrame, "Bridge Fuselage");
+		if (bridge == null)
+		{
+			return;
+		}
+
+		bridge.transform.SetParent(rearFrame.transform.parent, worldPositionStays: true);
+		bridge.transform.position = (rearPosition + frontPosition) * 0.5f;
+		bridge.transform.rotation = BuildBridgeRotation(rearFrame, bridgeForward);
+		bridge.transform.localScale = rearFrame.transform.localScale;
+		Vector3 bridgeOffset = bridge.transform.InverseTransformVector(frontPosition - rearPosition);
+		bridge.ConfigureBridgeShape(
+			bridgeOffset,
+			rearFrame.GetEndSectionSettings(rearFrameFront),
+			frontFrame.GetEndSectionSettings(frontFrameFront));
+
+		if (Vector3.Dot(bridgeForward.normalized, -frontFrame.GetEndWorldNormal(frontFrameFront).normalized) < BridgeNormalWarningDot)
+		{
+			Debug.LogWarning("Bridge was created, but the selected frame normals are not closely opposite. Check the new fuselage end alignment.", bridge);
+		}
+
+		FinishFuselageTool(craft, bridge);
+		Selection.activeGameObject = bridge.gameObject;
+	}
+
+	[MenuItem(BridgeSelectedFramesMenuPath, true)]
+	private static bool ValidateBridgeSelectedFrames()
+	{
+		return TryGetSelectedFuselagePair(out _, out _, out _);
+	}
+
+	[MenuItem(GenerateSelectedEndFramesMenuPath)]
+	// 从当前选中的圆筒两端生成短框架圆筒。 / Generate short frame fuselages at both ends of the selected cylinder.
+	private static void GenerateSelectedEndFrames()
+	{
+		if (!TryGetSingleSelectedFuselage(out FuselagePart source))
+		{
+			return;
+		}
+
+		Craft craft = source.GetComponentInParent<Craft>();
+		if (craft == null)
+		{
+			return;
+		}
+
+		if (!source.SupportsLinearCylinderTools())
+		{
+			Debug.LogWarning("End frame generation only supports non-cone fuselage cylinders.", source);
+			return;
+		}
+
+		FuselagePart rearFrame = CreateEndFrame(craft, source, front: false);
+		FuselagePart frontFrame = CreateEndFrame(craft, source, front: true);
+		if (rearFrame == null || frontFrame == null)
+		{
+			return;
+		}
+
+		FinishFuselageTool(craft, rearFrame, frontFrame);
+		Selection.objects = new Object[] { rearFrame.gameObject, frontFrame.gameObject };
+	}
+
+	[MenuItem(GenerateSelectedEndFramesMenuPath, true)]
+	private static bool ValidateGenerateSelectedEndFrames()
+	{
+		return TryGetSingleSelectedFuselage(out _);
+	}
+
 	// 读取当前是否只选中了一个可编辑机身。 / Check whether the current selection contains exactly one editable fuselage.
 	private static bool TryGetSingleSelectedFuselage(out FuselagePart fuselage)
 	{
@@ -269,68 +406,347 @@ public class FuselagePartEditor : UnityEditor.Editor
 		return craft != null && craft == second.GetComponentInParent<Craft>() && first != second;
 	}
 
-	// 用一条新的 reciprocal 连接替换两个端点当前占用的旧连接。 / Replace the current connections occupying two attach points with one new reciprocal connection.
-	private static void ConnectFuselageEnds(Craft craft, FuselagePart first, int firstAttachPointId, FuselagePart second, int secondAttachPointId)
+	// 按比例把当前选中的机身切成前后两段。 / Slice the selected fuselage into rear and front spans by ratio.
+	private static void SliceSelectedFuselageByRatio(float cutRatio)
+	{
+		if (!TryGetSingleSelectedFuselage(out FuselagePart source))
+		{
+			return;
+		}
+
+		Craft craft = source.GetComponentInParent<Craft>();
+		if (craft == null)
+		{
+			return;
+		}
+
+		if (!source.SupportsLinearCylinderTools())
+		{
+			Debug.LogWarning("Ratio slicing only supports non-cone fuselage cylinders.", source);
+			return;
+		}
+
+		float ratio = ClampSliceRatio(cutRatio);
+		FuselagePart frontSegment = CreateFuselageClone(craft, source, "Slice Fuselage");
+		if (frontSegment == null)
+		{
+			return;
+		}
+
+		frontSegment.transform.SetParent(source.transform.parent, worldPositionStays: false);
+		Undo.RecordObjects(new Object[] { craft, source, source.transform, frontSegment, frontSegment.transform }, "Slice Fuselage");
+
+		frontSegment.ConfigureAsSpanOf(source, ratio, 1f);
+		source.ConfigureAsSpanOf(source, 0f, ratio);
+
+		FinishFuselageTool(craft, source, source, frontSegment);
+		Selection.objects = new Object[] { source.gameObject, frontSegment.gameObject };
+	}
+
+	// 创建一个基于模板 XML 的新机身并分配唯一 PartId。 / Create a new fuselage from template XML with a unique PartId.
+	private static FuselagePart CreateFuselageClone(Craft craft, FuselagePart template, string undoName)
+	{
+		if (craft == null || template == null)
+		{
+			return null;
+		}
+
+		XElement cloneElement = template.ExportPartElement();
+		cloneElement.SetAttributeValue("id", craft.AllocatePartId());
+		Part createdPart = craft.CreatePartFromXml(cloneElement, craft.AllocateOrderIndex());
+		if (createdPart is not FuselagePart fuselage)
+		{
+			if (createdPart != null)
+			{
+				Undo.DestroyObjectImmediate(createdPart.gameObject);
+			}
+
+			return null;
+		}
+
+		Undo.RegisterCreatedObjectUndo(fuselage.gameObject, undoName);
+		return fuselage;
+	}
+
+	// 在源圆筒一个端面中心创建短框架，框架中心与源端面中心重合。 / Create a short frame at one source end with its center on the source end center.
+	private static FuselagePart CreateEndFrame(Craft craft, FuselagePart source, bool front)
+	{
+		FuselagePart frame = CreateFuselageClone(craft, source, front ? "Generate Front Fuselage Frame" : "Generate Rear Fuselage Frame");
+		if (frame == null)
+		{
+			return null;
+		}
+
+		frame.transform.SetParent(source.transform.parent, worldPositionStays: true);
+		frame.transform.position = source.GetEndWorldPosition(front);
+		frame.transform.rotation = source.transform.rotation;
+		frame.transform.localScale = source.transform.localScale;
+		FuselageSectionSettings section = source.GetEndSectionSettings(front);
+		frame.ConfigureBridgeShape(Vector3.forward * GeneratedFrameLength, section, section);
+		return frame;
+	}
+
+	// 从四种端点组合里选出最适合桥接的一对相向端面，桥接坐标锚定框架中心。 / Pick facing frame ends while anchoring bridge coordinates to frame centers.
+	private static bool TryResolveBridgeEnds(
+		FuselagePart first,
+		FuselagePart second,
+		out FuselagePart rearFrame,
+		out bool rearFrameFront,
+		out FuselagePart frontFrame,
+		out bool frontFrameFront,
+		out Vector3 rearPosition,
+		out Vector3 frontPosition,
+		out Vector3 bridgeForward)
+	{
+		rearFrame = null;
+		rearFrameFront = false;
+		frontFrame = null;
+		frontFrameFront = false;
+		rearPosition = Vector3.zero;
+		frontPosition = Vector3.zero;
+		bridgeForward = Vector3.forward;
+		Vector3 firstCenter = first.GetCenterWorldPosition();
+		Vector3 secondCenter = second.GetCenterWorldPosition();
+		Vector3 delta = secondCenter - firstCenter;
+		if (delta.sqrMagnitude <= BridgeMinimumDistance * BridgeMinimumDistance)
+		{
+			return false;
+		}
+
+		bool firstToSecond = TryEvaluateBridgeOrder(first, second, out bool firstFront, out bool secondFront, out Vector3 firstBridgeForward, out float firstScore);
+		bool secondToFirst = TryEvaluateBridgeOrder(second, first, out bool secondRearFront, out bool firstFrontEnd, out Vector3 secondBridgeForward, out float secondScore);
+		if (!firstToSecond && !secondToFirst)
+		{
+			return false;
+		}
+
+		if (!secondToFirst || (firstToSecond && firstScore >= secondScore))
+		{
+			rearFrame = first;
+			rearFrameFront = firstFront;
+			frontFrame = second;
+			frontFrameFront = secondFront;
+			rearPosition = firstCenter;
+			frontPosition = secondCenter;
+			bridgeForward = firstBridgeForward;
+			return true;
+		}
+
+		rearFrame = second;
+		rearFrameFront = secondRearFront;
+		frontFrame = first;
+		frontFrameFront = firstFrontEnd;
+		rearPosition = secondCenter;
+		frontPosition = firstCenter;
+		bridgeForward = secondBridgeForward;
+		return true;
+	}
+
+	// 评估一个“rear -> front”的桥接候选，优先选择端面相向且旋转接近源框架的结果。 / Score one rear-to-front bridge order, preferring facing ends and rotations close to the source frames.
+	private static bool TryEvaluateBridgeOrder(
+		FuselagePart rearCandidate,
+		FuselagePart frontCandidate,
+		out bool rearCandidateFront,
+		out bool frontCandidateFront,
+		out Vector3 bridgeForward,
+		out float score)
+	{
+		rearCandidateFront = false;
+		frontCandidateFront = false;
+		bridgeForward = Vector3.forward;
+		score = float.NegativeInfinity;
+		Vector3 rearPosition = rearCandidate.GetCenterWorldPosition();
+		Vector3 frontPosition = frontCandidate.GetCenterWorldPosition();
+		Vector3 delta = frontPosition - rearPosition;
+		if (delta.sqrMagnitude <= BridgeMinimumDistance * BridgeMinimumDistance)
+		{
+			return false;
+		}
+
+		Vector3 direction = delta.normalized;
+		rearCandidateFront = SelectEndFacingDirection(rearCandidate, direction);
+		frontCandidateFront = SelectEndFacingDirection(frontCandidate, -direction);
+		Vector3 rearNormal = rearCandidate.GetEndWorldNormal(rearCandidateFront).normalized;
+		Vector3 frontNormal = frontCandidate.GetEndWorldNormal(frontCandidateFront).normalized;
+		bridgeForward = rearNormal.sqrMagnitude > 0.0001f ? rearNormal : direction;
+		float facingScore = Vector3.Dot(rearNormal, direction)
+			+ Vector3.Dot(frontNormal, -direction)
+			+ Vector3.Dot(rearNormal, -frontNormal);
+		Quaternion bridgeRotation = BuildBridgeRotation(rearCandidate, bridgeForward);
+		float rotationPenalty = Quaternion.Angle(bridgeRotation, rearCandidate.transform.rotation)
+			+ Quaternion.Angle(bridgeRotation, frontCandidate.transform.rotation);
+		score = facingScore * 1000f - rotationPenalty;
+		return true;
+	}
+
+	// 选择法线最接近目标方向的端面。 / Pick the end whose normal best follows the target direction.
+	private static bool SelectEndFacingDirection(FuselagePart fuselage, Vector3 direction)
+	{
+		float rearScore = Vector3.Dot(fuselage.GetEndWorldNormal(front: false).normalized, direction);
+		float frontScore = Vector3.Dot(fuselage.GetEndWorldNormal(front: true).normalized, direction);
+		return frontScore >= rearScore;
+	}
+
+	// 使用第一块框架的 up 方向构建桥接段旋转。 / Build the bridge rotation using the first frame's up direction.
+	private static Quaternion BuildBridgeRotation(FuselagePart first, Vector3 bridgeForward)
+	{
+		Vector3 forward = bridgeForward.sqrMagnitude <= 0.0001f ? first.transform.forward : bridgeForward.normalized;
+		Vector3 up = first.transform.up;
+		if (Vector3.Cross(forward, up).sqrMagnitude <= 0.0001f)
+		{
+			up = first.transform.right;
+		}
+
+		return Quaternion.LookRotation(forward, up);
+	}
+
+	// 标记相关对象并立即重建预览。 / Mark related objects dirty and rebuild the preview immediately.
+	private static void FinishFuselageTool(Craft craft, Part previewRoot, params Part[] dirtyParts)
+	{
+		if (craft == null)
+		{
+			return;
+		}
+
+		EditorUtility.SetDirty(craft);
+		if (previewRoot != null)
+		{
+			EditorUtility.SetDirty(previewRoot);
+		}
+
+		foreach (Part part in dirtyParts)
+		{
+			if (part != null)
+			{
+				EditorUtility.SetDirty(part);
+			}
+		}
+
+		craft.RebuildAllPreviews(lightweight: false);
+		EditorApplication.QueuePlayerLoopUpdate();
+		SceneView.RepaintAll();
+	}
+
+	private static float ClampSliceRatio(float ratio)
+	{
+		return Mathf.Clamp(ratio, MinimumSliceRatio, 1f - MinimumSliceRatio);
+	}
+
+	private sealed class SliceRatioWizard : ScriptableWizard
+	{
+		public float CutRatio = 0.5f;
+
+		public static void Open()
+		{
+			DisplayWizard<SliceRatioWizard>("Slice Fuselage By Ratio", "Slice");
+		}
+
+		private void OnWizardUpdate()
+		{
+			CutRatio = ClampSliceRatio(CutRatio);
+			helpString = "CutRatio is measured from Rear to Front. 0.3 creates a 30% rear segment and a 70% front segment.";
+			errorString = TryGetSingleSelectedFuselage(out _) ? string.Empty : "Select exactly one FuselagePart.";
+			isValid = string.IsNullOrEmpty(errorString);
+		}
+
+		private void OnWizardCreate()
+		{
+			SliceSelectedFuselageByRatio(CutRatio);
+		}
+	}
+
+	// 追加一条 reciprocal 连接；同一端点位允许多连，但完全相同的端点对不重复创建。 / Add one reciprocal connection without clearing other links on the same attach points.
+	private static void ConnectFuselageEnds(
+		Craft craft,
+		FuselagePart first,
+		int firstAttachPointId,
+		FuselagePart second,
+		int secondAttachPointId,
+		string undoName = "Auto Connect Fuselages",
+		bool rebuildPreview = true)
 	{
 		if (craft == null || first == null || second == null)
 		{
 			return;
 		}
 
-		Undo.RecordObjects(new Object[] { craft, first, second }, "Auto Connect Fuselages");
+		Undo.RecordObjects(new Object[] { craft, first, second }, undoName);
 
-		first.RemoveConnectionEndpointsForLocalAttachPoint(firstAttachPointId);
-		craft.SynchronizeConnectionsFrom(first);
-		second.RemoveConnectionEndpointsForLocalAttachPoint(secondAttachPointId);
-		craft.SynchronizeConnectionsFrom(second);
+		bool existsOnFirst = first.HasConnectionEndpoint(firstAttachPointId, second.PartId, secondAttachPointId);
+		bool existsOnSecond = second.HasConnectionEndpoint(secondAttachPointId, first.PartId, firstAttachPointId);
+		if (existsOnFirst || existsOnSecond)
+		{
+			if (existsOnFirst)
+			{
+				craft.SynchronizeConnectionsFrom(first, removeStaleReciprocals: false);
+			}
+			else
+			{
+				craft.SynchronizeConnectionsFrom(second, removeStaleReciprocals: false);
+			}
+
+			EditorUtility.SetDirty(craft);
+			EditorUtility.SetDirty(first);
+			EditorUtility.SetDirty(second);
+			if (rebuildPreview)
+			{
+				craft.RebuildPreviewForPart(first, lightweight: false);
+				EditorApplication.QueuePlayerLoopUpdate();
+				SceneView.RepaintAll();
+			}
+			return;
+		}
 
 		int connectionId = craft.AllocateConnectionId();
 		first.AddConnectionEndpoint(connectionId, isPartAEndpoint: true, localAttachPointId: firstAttachPointId, connectedPartId: second.PartId, connectedAttachPointId: secondAttachPointId);
-		craft.SynchronizeConnectionsFrom(first);
+		craft.SynchronizeConnectionsFrom(first, removeStaleReciprocals: false);
 
 		EditorUtility.SetDirty(craft);
 		EditorUtility.SetDirty(first);
 		EditorUtility.SetDirty(second);
-		craft.RebuildPreviewForPart(first, lightweight: false);
-		EditorApplication.QueuePlayerLoopUpdate();
-		SceneView.RepaintAll();
+		if (rebuildPreview)
+		{
+			craft.RebuildPreviewForPart(first, lightweight: false);
+			EditorApplication.QueuePlayerLoopUpdate();
+			SceneView.RepaintAll();
+		}
 	}
 
 	// 以原游戏的 corner 编辑语义绘制一个截面。 / Draw one serialized fuselage section using the original game's corner editing semantics.
 	private static void DrawSection(SerializedProperty section)
 	{
 		EditorGUI.indentLevel++;
-       DrawSectionGroup(section, "BaseInfos", draw: () =>
+       DrawSectionGroup(section, "BaseInfos", BaseInfoLabelColor, draw: () =>
 		{
-			EditorGUILayout.PropertyField(section.FindPropertyRelative("Width"));
-			EditorGUILayout.PropertyField(section.FindPropertyRelative("Height"));
-			EditorGUILayout.PropertyField(section.FindPropertyRelative("Trapezium"));
-			EditorGUILayout.PropertyField(section.FindPropertyRelative("Thickness"));
-			EditorGUILayout.PropertyField(section.FindPropertyRelative("Smooth"));
-			DrawUniformIntField(section.FindPropertyRelative("CornerSamples"), "cornerSamples", 2);
-			DrawUniformIntField(section.FindPropertyRelative("EdgeSamples"), "edgeSamples", 1);
+			DrawColoredPropertyField(section.FindPropertyRelative("Width"), BaseInfoLabelColor);
+			DrawColoredPropertyField(section.FindPropertyRelative("Height"), BaseInfoLabelColor);
+			DrawColoredPropertyField(section.FindPropertyRelative("Trapezium"), BaseInfoLabelColor);
+			DrawColoredPropertyField(section.FindPropertyRelative("Thickness"), BaseInfoLabelColor);
+			DrawColoredPropertyField(section.FindPropertyRelative("Smooth"), BaseInfoLabelColor);
+			DrawUniformIntField(section.FindPropertyRelative("CornerSamples"), "cornerSamples", 2, BaseInfoLabelColor);
+			DrawUniformIntField(section.FindPropertyRelative("EdgeSamples"), "edgeSamples", 1, BaseInfoLabelColor);
 		});
-		DrawSectionGroup(section, "Corners", draw: () =>
+		DrawSectionGroup(section, "Corners", CornerLabelColor, draw: () =>
 		{
-			DrawCornerStyleGroup(section);
+			DrawCornerStyleGroup(section, CornerLabelColor);
 		});
-		DrawSectionGroup(section, "Edges", draw: () =>
+		DrawSectionGroup(section, "Edges", EdgeLabelColor, draw: () =>
 		{
-			DrawFloat4Group(section.FindPropertyRelative("EdgeCurvature"), "Edge Curvature", EdgeNames);
+			DrawFloat4Group(section.FindPropertyRelative("EdgeCurvature"), "Edge Curvature", EdgeNames, EdgeLabelColor);
 		});
-		DrawSectionGroup(section, "Slices", draw: () =>
+		DrawSectionGroup(section, "Slices", SliceLabelColor, draw: () =>
 		{
-			DrawCuttingGroup(section);
+			DrawCuttingGroup(section, SliceLabelColor);
 		});
 		EditorGUI.indentLevel--;
 	}
 
 	// 把截面 Inspector 分成可折叠的小组，减少一次性绘制控件数量。 / Split section inspector UI into foldout groups to reduce the amount of controls drawn at once.
-	private static void DrawSectionGroup(SerializedProperty section, string groupName, System.Action draw)
+	private static void DrawSectionGroup(SerializedProperty section, string groupName, Color labelColor, System.Action draw)
 	{
 		string key = section.propertyPath + "." + groupName;
 		bool expanded = GetSectionFoldout(key, defaultValue: groupName == "BaseInfos");
-        expanded = EditorGUILayout.Foldout(expanded, groupName, true);
+        expanded = EditorGUILayout.Foldout(expanded, groupName, true, GetColoredStyle(EditorStyles.foldout, labelColor));
 		SetSectionFoldout(key, expanded);
 		if (expanded)
 		{
@@ -341,13 +757,13 @@ public class FuselagePartEditor : UnityEditor.Editor
 	}
 
  // 按当前编辑器语义绘制每边切割：滑块大于 0 即自动启用，回到 0 则关闭。 / Draw per-side slice controls so values above zero enable cutting and zero disables it.
-	private static void DrawCuttingGroup(SerializedProperty section)
+	private static void DrawCuttingGroup(SerializedProperty section, Color labelColor)
 	{
 		SerializedProperty cutEnabled = section.FindPropertyRelative("CutEnabled");
 		FuselageSectionSettings previewSection = CreatePreviewSection(section);
 		previewSection.GetCuttingRange(out Float4Value minCutting, out Float4Value maxCutting);
 
-		EditorGUILayout.LabelField("Slice Cutting", EditorStyles.boldLabel);
+		DrawColoredHeader("Slice Cutting", labelColor);
 		EditorGUI.indentLevel++;
 		for (int i = 0; i < CutNames.Length; i++)
 		{
@@ -356,21 +772,30 @@ public class FuselagePartEditor : UnityEditor.Editor
 				section.FindPropertyRelative(CutFieldNames[i]),
 				CutNames[i],
 				minCutting[i],
-				maxCutting[i]);
+				maxCutting[i],
+				labelColor);
 		}
 		EditorGUI.indentLevel--;
 	}
 
 	// 把单边切割画成条件扩展范围的滑块；0 仍表示不切，只有真实轮廓超出名义外框时才开放 <0 或 >1 的输入。 / Draw one cut side with a conditionally extended range; zero still means uncut, while <0 or >1 become available only when the live outline requires it.
-	private static void DrawCutField(SerializedProperty enabledProperty, SerializedProperty valueProperty, string label, float minCutting, float maxCutting)
+	private static void DrawCutField(SerializedProperty enabledProperty, SerializedProperty valueProperty, string label, float minCutting, float maxCutting, Color labelColor)
 	{
 		float sliderMin = Mathf.Min(0f, minCutting);
 		float sliderMax = Mathf.Max(1f, maxCutting);
 		float currentValue = enabledProperty.boolValue ? Mathf.Clamp(valueProperty.floatValue, sliderMin, sliderMax) : 0f;
-		EditorGUILayout.BeginHorizontal();
-		float editedValue = EditorGUILayout.Slider(label, currentValue, sliderMin, sliderMax);
-		editedValue = EditorGUILayout.FloatField(editedValue, GUILayout.Width(64f));
-		EditorGUILayout.EndHorizontal();
+		Rect position = EditorGUILayout.GetControlRect();
+		Rect fieldRect = EditorGUI.PrefixLabel(
+			position,
+			GUIUtility.GetControlID(FocusType.Passive, position),
+			new GUIContent(label),
+			GetColoredStyle(EditorStyles.label, labelColor));
+		const float floatFieldWidth = 64f;
+		const float spacing = 4f;
+		Rect sliderRect = new Rect(fieldRect.x, fieldRect.y, Mathf.Max(0f, fieldRect.width - floatFieldWidth - spacing), fieldRect.height);
+		Rect floatRect = new Rect(sliderRect.xMax + spacing, fieldRect.y, floatFieldWidth, fieldRect.height);
+		float editedValue = EditorGUI.Slider(sliderRect, currentValue, sliderMin, sliderMax);
+		editedValue = EditorGUI.FloatField(floatRect, editedValue);
 
 		float clampedValue = Mathf.Clamp(editedValue, sliderMin, sliderMax);
 		bool enabled = Mathf.Abs(clampedValue) > 0.0001f;
@@ -391,7 +816,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 	}
 
 	// 把每个 corner 画成“模式 + 单一数值”，而不是拆开的半径和 stretch 字段。 / Draw each corner as a shared mode-plus-value pair instead of separate radius and stretch fields.
-	private static void DrawCornerStyleGroup(SerializedProperty section)
+	private static void DrawCornerStyleGroup(SerializedProperty section, Color labelColor)
 	{
 		SerializedProperty cornerRadii = section.FindPropertyRelative("CornerRadii");
 		SerializedProperty cornerStretch = section.FindPropertyRelative("CornerStretch");
@@ -399,17 +824,17 @@ public class FuselagePartEditor : UnityEditor.Editor
 		Float4Value maxRoundedRadii = previewSection.GetMaxCornerRadii(stretched: false);
 		Float4Value maxStretchedRadii = previewSection.GetMaxCornerRadii(stretched: true);
 
-		EditorGUILayout.LabelField("Corner Styles", EditorStyles.boldLabel);
+		DrawColoredHeader("Corner Styles", labelColor);
 		EditorGUI.indentLevel++;
 		for (int i = 0; i < CornerNames.Length; i++)
 		{
-			DrawCornerStyleField(cornerRadii, cornerStretch, i, CornerNames[i], maxRoundedRadii[i], maxStretchedRadii[i]);
+			DrawCornerStyleField(cornerRadii, cornerStretch, i, CornerNames[i], maxRoundedRadii[i], maxStretchedRadii[i], labelColor);
 		}
 		EditorGUI.indentLevel--;
 	}
 
 	// 绘制单个 corner 的编辑行，并根据模式切换米和百分比输入。 / Draw a single corner row that switches between meter and percent editing based on mode.
-	private static void DrawCornerStyleField(SerializedProperty cornerRadii, SerializedProperty cornerStretch, int index, string label, float maxRoundedRadius, float maxStretchedRadius)
+	private static void DrawCornerStyleField(SerializedProperty cornerRadii, SerializedProperty cornerStretch, int index, string label, float maxRoundedRadius, float maxStretchedRadius, Color labelColor)
 	{
 		SerializedProperty radiusProperty = GetValueComponent(cornerRadii, index);
 		SerializedProperty stretchProperty = GetValueComponent(cornerStretch, index);
@@ -417,11 +842,21 @@ public class FuselagePartEditor : UnityEditor.Editor
 		float activeMax = Mathf.Max(0f, mode == CornerMode.Stretched ? maxStretchedRadius : maxRoundedRadius);
 		float clampedRadius = Mathf.Clamp(radiusProperty.floatValue, 0f, activeMax);
 
-		EditorGUILayout.BeginHorizontal();
-		EditorGUILayout.PrefixLabel(label);
+		Rect position = EditorGUILayout.GetControlRect();
+		Rect fieldRect = EditorGUI.PrefixLabel(
+			position,
+			GUIUtility.GetControlID(FocusType.Passive, position),
+			new GUIContent(label),
+			GetColoredStyle(EditorStyles.label, labelColor));
+		const float spacing = 4f;
+		float modeWidth = Mathf.Min(96f, fieldRect.width * 0.45f);
+		const float unitWidth = 18f;
+		Rect modeRect = new Rect(fieldRect.x, fieldRect.y, modeWidth, fieldRect.height);
+		Rect unitRect = new Rect(fieldRect.xMax - unitWidth, fieldRect.y, unitWidth, fieldRect.height);
+		Rect valueRect = new Rect(modeRect.xMax + spacing, fieldRect.y, Mathf.Max(40f, unitRect.x - modeRect.xMax - spacing), fieldRect.height);
 
 		// 在 Rounded 和 Stretched 之间切换时保持相同的归一化位置。 / Preserve the same normalized position when switching between rounded and stretched modes.
-		CornerMode newMode = (CornerMode)EditorGUILayout.EnumPopup(mode, GUILayout.MaxWidth(96f));
+		CornerMode newMode = (CornerMode)EditorGUI.EnumPopup(modeRect, mode);
 		if (newMode != mode)
 		{
 			float oldMax = Mathf.Max(0.0001f, activeMax);
@@ -436,9 +871,8 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 		float displayValue = QuantizeCornerDisplayValue(mode == CornerMode.Stretched ? clampedRadius * 100f : clampedRadius, maxDisplayValue: mode == CornerMode.Stretched ? activeMax * 100f : activeMax);
 		float maxDisplayValue = mode == CornerMode.Stretched ? activeMax * 100f : activeMax;
-		float newDisplayValue = EditorGUILayout.FloatField(displayValue);
-		GUILayout.Label(mode == CornerMode.Stretched ? "%" : "m", GUILayout.Width(18f));
-		EditorGUILayout.EndHorizontal();
+		float newDisplayValue = EditorGUI.FloatField(valueRect, displayValue);
+		GUI.Label(unitRect, mode == CornerMode.Stretched ? "%" : "m", GetColoredStyle(EditorStyles.label, labelColor));
 
 		// 把百分比输入换算回 stretched corner 内部保存的归一化半径。 / Convert percent input back into the stored normalized radius used by stretched corners.
 		if (!Mathf.Approximately(newDisplayValue, displayValue))
@@ -459,7 +893,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 	}
 
 	// 用单个整数字段统一设置四个 corner 或四条 edge 的采样数；若当前四个值不一致，则用 mixed-value 显示。 / Use one integer field to set all four corner or edge sample counts, showing a mixed value when the stored components differ.
-	private static void DrawUniformIntField(SerializedProperty property, string label, int minimumValue)
+	private static void DrawUniformIntField(SerializedProperty property, string label, int minimumValue, Color labelColor)
 	{
 		SerializedProperty x = property.FindPropertyRelative("X");
 		SerializedProperty y = property.FindPropertyRelative("Y");
@@ -470,7 +904,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 		bool previousShowMixedValue = EditorGUI.showMixedValue;
 		EditorGUI.showMixedValue = mixed;
 		EditorGUI.BeginChangeCheck();
-		int editedValue = EditorGUILayout.IntField(label, currentValue);
+		int editedValue = DrawColoredIntField(label, currentValue, labelColor);
 		if (EditorGUI.EndChangeCheck())
 		{
 			int clampedValue = Mathf.Max(minimumValue, editedValue);
@@ -543,33 +977,85 @@ public class FuselagePartEditor : UnityEditor.Editor
 	}
 
 	// 用逐分量行的方式绘制 Float4Value。 / Draw a labeled Float4Value group using one line per component.
-	private static void DrawFloat4Group(SerializedProperty property, string label, string[] itemNames)
+	private static void DrawFloat4Group(SerializedProperty property, string label, string[] itemNames, Color labelColor)
 	{
-		DrawValueGroup(property, label, itemNames, (itemProperty, itemLabel) =>
+		DrawValueGroup(property, label, itemNames, labelColor, (itemProperty, itemLabel) =>
 		{
-			EditorGUILayout.PropertyField(itemProperty, new GUIContent(itemLabel));
+			DrawColoredPropertyField(itemProperty, labelColor, itemLabel);
 		});
 	}
 
 	// 用逐分量行的方式绘制 Int4Value。 / Draw a labeled Int4Value group using one line per component.
 	private static void DrawInt4Group(SerializedProperty property, string label, string[] itemNames)
 	{
-		DrawValueGroup(property, label, itemNames, (itemProperty, itemLabel) =>
+		DrawValueGroup(property, label, itemNames, EditorStyles.label.normal.textColor, (itemProperty, itemLabel) =>
 		{
 			EditorGUILayout.PropertyField(itemProperty, new GUIContent(itemLabel));
 		});
 	}
 
 	// 复用四元辅助结构的通用绘制模式。 / Share the repeated four-component drawing pattern across the helper value structs.
-	private static void DrawValueGroup(SerializedProperty property, string label, string[] itemNames, System.Action<SerializedProperty, string> drawValue)
+	private static void DrawValueGroup(SerializedProperty property, string label, string[] itemNames, Color labelColor, System.Action<SerializedProperty, string> drawValue)
 	{
-		EditorGUILayout.LabelField(label, EditorStyles.boldLabel);
+		DrawColoredHeader(label, labelColor);
 		EditorGUI.indentLevel++;
 		drawValue(property.FindPropertyRelative("X"), itemNames[0]);
 		drawValue(property.FindPropertyRelative("Y"), itemNames[1]);
 		drawValue(property.FindPropertyRelative("Z"), itemNames[2]);
 		drawValue(property.FindPropertyRelative("W"), itemNames[3]);
 		EditorGUI.indentLevel--;
+	}
+
+	// 绘制带颜色的字段标签，只染左侧说明文本。 / Draw a property field with only its left label tinted.
+	private static void DrawColoredPropertyField(SerializedProperty property, Color labelColor, string label = null)
+	{
+		Rect position = EditorGUILayout.GetControlRect(true, EditorGUI.GetPropertyHeight(property, GUIContent.none, includeChildren: false));
+		Rect fieldRect = EditorGUI.PrefixLabel(
+			position,
+			GUIUtility.GetControlID(FocusType.Passive, position),
+			new GUIContent(label ?? property.displayName),
+			GetColoredStyle(EditorStyles.label, labelColor));
+		EditorGUI.PropertyField(fieldRect, property, GUIContent.none);
+	}
+
+	// 绘制带颜色左侧标签的整数输入。 / Draw an integer field with a tinted left label.
+	private static int DrawColoredIntField(string label, int value, Color labelColor)
+	{
+		Rect position = EditorGUILayout.GetControlRect();
+		Rect fieldRect = EditorGUI.PrefixLabel(
+			position,
+			GUIUtility.GetControlID(FocusType.Passive, position),
+			new GUIContent(label),
+			GetColoredStyle(EditorStyles.label, labelColor));
+		return EditorGUI.IntField(fieldRect, value);
+	}
+
+	// 绘制带颜色的组内标题。 / Draw a tinted title inside one section group.
+	private static void DrawColoredHeader(string label, Color labelColor)
+	{
+		EditorGUILayout.LabelField(label, GetColoredStyle(EditorStyles.boldLabel, labelColor));
+	}
+
+	// 从 Unity 内置样式派生一个只改文字颜色的样式。 / Create a text-color-only variant from a built-in Unity editor style.
+	private static GUIStyle GetColoredStyle(GUIStyle source, Color labelColor)
+	{
+		string key = $"{source.name}:{labelColor.r:0.###},{labelColor.g:0.###},{labelColor.b:0.###},{labelColor.a:0.###}";
+		if (ColoredStyleCache.TryGetValue(key, out GUIStyle cachedStyle))
+		{
+			return cachedStyle;
+		}
+
+		GUIStyle style = new GUIStyle(source);
+		style.normal.textColor = labelColor;
+		style.hover.textColor = labelColor;
+		style.focused.textColor = labelColor;
+		style.active.textColor = labelColor;
+		style.onNormal.textColor = labelColor;
+		style.onHover.textColor = labelColor;
+		style.onFocused.textColor = labelColor;
+		style.onActive.textColor = labelColor;
+		ColoredStyleCache[key] = style;
+		return style;
 	}
 }
 
@@ -694,7 +1180,7 @@ internal class RawXmlTextEditorWindow : EditorWindow
 
 internal static class PartInspectorUtility
 {
-	private const string CloneSelectedMenuPath = "Tools/SP2 Craft Editor/Part/Clone Selected #b";
+	private const string CloneSelectedMenuPath = "Tools/SP2 Craft Editor/Part/Clone Selected #r";
 
 	public static void DrawPartIdentity(Part part)
 	{

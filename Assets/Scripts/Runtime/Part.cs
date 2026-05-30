@@ -349,6 +349,22 @@ public abstract class Part : MonoBehaviour, ISerializationCallbackReceiver
 		_connectionEndpoints.Add(new PartConnectionEndpoint(connectionId, isPartAEndpoint, localAttachPointId, connectedPartId, connectedAttachPointId));
 	}
 
+	// 判断指定端点对是否已经存在；同一 attach point 可以连多个零件，但不能重复连接同一个对端 attach point。 / Check whether a specific endpoint pair already exists.
+	public bool HasConnectionEndpoint(int localAttachPointId, int connectedPartId, int connectedAttachPointId)
+	{
+		foreach (PartConnectionEndpoint endpoint in _connectionEndpoints)
+		{
+			if (endpoint.LocalAttachPointId == localAttachPointId
+				&& endpoint.ConnectedPartId == connectedPartId
+				&& endpoint.ConnectedAttachPointId == connectedAttachPointId)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	// 更新 materials 文本并重新解析材质 id 列表。 / Update the materials text and reparse the material id list.
 	public void SetMaterialsText(string materialsText)
 	{
@@ -417,11 +433,12 @@ public abstract class Part : MonoBehaviour, ISerializationCallbackReceiver
 		for (int i = 0; i < _connectionEndpoints.Count; i++)
 		{
 			PartConnectionEndpoint existing = _connectionEndpoints[i];
-			if (!ConnectionEndpointsMatch(existing, reciprocal))
+			if (!ConnectionEndpointsMatch(existing, reciprocal) && !ConnectionEndpointPairsMatch(existing, reciprocal))
 			{
 				continue;
 			}
 
+			existing.ConnectionId = reciprocal.ConnectionId;
 			existing.IsPartAEndpoint = reciprocal.IsPartAEndpoint;
 			existing.LocalAttachPointId = reciprocal.LocalAttachPointId;
 			existing.ConnectedPartId = reciprocal.ConnectedPartId;
@@ -476,6 +493,19 @@ public abstract class Part : MonoBehaviour, ISerializationCallbackReceiver
 		return a.ConnectionId == b.ConnectionId
 			&& a.IsPartAEndpoint == b.IsPartAEndpoint
 			&& a.LocalAttachPointId == b.LocalAttachPointId
+			&& a.ConnectedPartId == b.ConnectedPartId
+			&& a.ConnectedAttachPointId == b.ConnectedAttachPointId;
+	}
+
+	// 只比较端点对本身，用于把历史遗留的重复连接收敛到同一条 reciprocal 记录。 / Compare only the endpoint pair so duplicate links with different ids can be folded together.
+	private static bool ConnectionEndpointPairsMatch(PartConnectionEndpoint a, PartConnectionEndpoint b)
+	{
+		if (a == null || b == null)
+		{
+			return false;
+		}
+
+		return a.LocalAttachPointId == b.LocalAttachPointId
 			&& a.ConnectedPartId == b.ConnectedPartId
 			&& a.ConnectedAttachPointId == b.ConnectedAttachPointId;
 	}

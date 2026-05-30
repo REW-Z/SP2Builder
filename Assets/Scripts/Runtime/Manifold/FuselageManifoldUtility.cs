@@ -6,7 +6,7 @@ namespace SP2Builder.ManifoldRuntime
 {
 	internal static class FuselageManifoldUtility
 	{
-		private const double MinimumValidVolume = 1.1920928955078125E-07d;
+		private const double MinimumValidVolume = 1.1920928955078125E-10d;
 
 		// 把机身 loft 输入转成 manifold，并在需要时执行 section-cutting 相交。 / Convert loft input into a manifold and optionally apply section-cutting intersection.
 		public static PreviewMeshData BuildLoft(PreviewMeshData source, FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool applySectionCutting, string meshName)
