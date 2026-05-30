@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using UnityEngine;
 
@@ -21,8 +22,8 @@ namespace SP2Builder.ManifoldRuntime
 			_ptr = ptr;
 		}
 
-		// 把 PreviewMeshData 变成 native manifold 句柄，并返回构造状态。 / Convert PreviewMeshData into a native manifold handle and return the construction status.
-		public static ManifoldHandle Create(PreviewMeshData meshData, out ManifoldError status)
+		// 直接把 Unity Mesh 转成 native manifold。 / Convert a Unity Mesh directly into a native manifold.
+		public static ManifoldHandle Create(Mesh mesh, out ManifoldError status)
 		{
 			status = ManifoldError.INVALID_CONSTRUCTION;
 			if (!ManifoldRuntimeAvailability.IsAvailable)
@@ -30,7 +31,32 @@ namespace SP2Builder.ManifoldRuntime
 				return null;
 			}
 
-			using ManifoldMeshHandle meshGl = ManifoldMeshHandle.Create(meshData);
+			using ManifoldMeshHandle meshGl = ManifoldMeshHandle.Create(mesh);
+			return CreateFromMeshGl(meshGl, out status);
+		}
+
+		// 直接把托管网格数组转成 native manifold。 / Convert managed mesh arrays directly into a native manifold.
+		public static ManifoldHandle Create(
+			IReadOnlyList<Vector3> vertices,
+			IReadOnlyList<Vector3> normals,
+			IReadOnlyList<IReadOnlyList<int>> subMeshTriangles,
+			IReadOnlyList<int> mergeFromVertices,
+			IReadOnlyList<int> mergeToVertices,
+			out ManifoldError status)
+		{
+			status = ManifoldError.INVALID_CONSTRUCTION;
+			if (!ManifoldRuntimeAvailability.IsAvailable)
+			{
+				return null;
+			}
+
+			using ManifoldMeshHandle meshGl = ManifoldMeshHandle.Create(vertices, normals, subMeshTriangles, mergeFromVertices, mergeToVertices);
+			return CreateFromMeshGl(meshGl, out status);
+		}
+
+		private static ManifoldHandle CreateFromMeshGl(ManifoldMeshHandle meshGl, out ManifoldError status)
+		{
+			status = ManifoldError.INVALID_CONSTRUCTION;
 			if (meshGl == null)
 			{
 				return null;
@@ -114,10 +140,10 @@ namespace SP2Builder.ManifoldRuntime
 			return new Bounds((min + max) * 0.5f, max - min);
 		}
 
-		// 把当前 native manifold 重新导出成 PreviewMeshData。 / Export the current native manifold back into PreviewMeshData.
-		public PreviewMeshData ToPreviewMeshData(string meshName)
+		// 把当前 native manifold 重新导出成 Unity Mesh。 / Export the current native manifold back into a Unity Mesh.
+		public Mesh ToMesh(string meshName)
 		{
-			return ManifoldPreviewMeshUtility.ToPreviewMeshData(this, meshName);
+			return ManifoldMeshExportUtility.ToMesh(this, meshName);
 		}
 
 		// 释放 native manifold 占用的托管外资源。 / Release the unmanaged resources held by the native manifold.

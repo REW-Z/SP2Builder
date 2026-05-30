@@ -121,17 +121,17 @@ public class WindowPart : Part, IFuselageCarver
         ApplyPreviewVisibility();
     }
 
-	// 构建用于机身布尔切割的 Window 闭体 PreviewMeshData。 / Build the closed Window PreviewMeshData used for fuselage cutting booleans.
-    public bool TryBuildCutPreviewData(FuselagePart target, out PreviewMeshData previewMeshData)
+	// 构建用于机身布尔切割的 Window 闭体 Mesh。 / Build the closed Window Mesh used for fuselage cutting booleans.
+    public bool TryBuildCutMesh(FuselagePart target, out Mesh mesh)
     {
-        previewMeshData = null;
+        mesh = null;
         if(!FuselageCarverUtility.CanCarveTarget(this, target))
         {
             return false;
         }
 
-        previewMeshData = FuselageCarverUtility.BuildSolidCutPreviewData(BuildOutline(), _depth, "ProceduralWindowCut");
-        return previewMeshData != null && previewMeshData.Vertices.Count > 0;
+        mesh = FuselageCarverUtility.BuildSolidCutMesh(BuildOutline(), _depth, "ProceduralWindowCut");
+        return mesh != null && mesh.vertexCount > 0;
     }
 
 	// 生成 Window 在局部截面平面中的二维外轮廓。 / Build the 2D local outline used by the window preview and cutter.

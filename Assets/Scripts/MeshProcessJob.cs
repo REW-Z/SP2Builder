@@ -18,13 +18,13 @@ public class MeshProcessJob
     public float noseconeRoundness;
     public int version;
 
-    //所有的裁切体预览网格数据    
-    public List<PreviewMeshData> cutterPreviewDataList;
+    //所有的裁切体网格数据
+    public List<Mesh> cutterMeshList;
     public List<Matrix4x4> cutterMeshMatrixList;
 
 
-    //后台计算结果
-    public PreviewMeshData resultMeshData;
+    //计算结果
+    public Mesh resultMesh;
     public Exception error;
 
 }

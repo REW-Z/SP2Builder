@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using SP2Builder.ManifoldRuntime;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 
 [Serializable]
@@ -520,42 +521,42 @@ internal static class FuselageGeometry
 		public bool Sharp;
 	}
 
-	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront)
+	internal static Mesh BuildLoftMesh(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront)
 	{
-		return BuildLoftData(rear, front, offset, hollow, cone: false, noseconeRoundness: 0.5f, capRear, capFront, applySectionCutting: false);
+		return BuildLoftMesh(rear, front, offset, hollow, cone: false, noseconeRoundness: 0.5f, capRear, capFront, applySectionCutting: false);
 	}
 
-	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront, bool applySectionCutting)
+	internal static Mesh BuildLoftMesh(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront, bool applySectionCutting)
 	{
-		return BuildLoftData(rear, front, offset, hollow, cone: false, noseconeRoundness: 0.5f, capRear, capFront, applySectionCutting);
+		return BuildLoftMesh(rear, front, offset, hollow, cone: false, noseconeRoundness: 0.5f, capRear, capFront, applySectionCutting);
 	}
 
 	// 按样式选择常规 loft 或 cone loft，并在需要时再交给 manifold 做截面裁切。 / Choose between the regular loft and cone loft raw mesh path before handing the result to manifold clipping.
-	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool cone, float noseconeRoundness, bool capRear, bool capFront)
+	internal static Mesh BuildLoftMesh(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool cone, float noseconeRoundness, bool capRear, bool capFront)
 	{
-		return BuildLoftData(rear, front, offset, hollow, cone, noseconeRoundness, capRear, capFront, applySectionCutting: false);
+		return BuildLoftMesh(rear, front, offset, hollow, cone, noseconeRoundness, capRear, capFront, applySectionCutting: false);
 	}
 
 	// 按样式构建机身原始网格，并在需要时执行统一的 section-cutting manifold 路径。 / Build the raw fuselage mesh for the requested style and optionally run the shared section-cutting manifold path.
-	internal static PreviewMeshData BuildLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool cone, float noseconeRoundness, bool capRear, bool capFront, bool applySectionCutting)
+	internal static Mesh BuildLoftMesh(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool cone, float noseconeRoundness, bool capRear, bool capFront, bool applySectionCutting)
 	{
-		PreviewMeshData source = cone
-			? BuildRawConeData(rear, front, offset, hollow, capRear, capFront, noseconeRoundness)
-			: BuildRawLoftData(rear, front, offset, hollow, capRear, capFront);
+		Mesh source = cone
+			? BuildRawConeMesh(rear, front, offset, hollow, capRear, capFront, noseconeRoundness)
+			: BuildRawLoftMesh(rear, front, offset, hollow, capRear, capFront);
 		if (source == null)
 		{
 			return null;
 		}
 
-		string meshName = string.IsNullOrWhiteSpace(source.Name)
+		string meshName = string.IsNullOrWhiteSpace(source.name)
 			? (hollow ? (cone ? "FuselageHollowCone" : "FuselageHollow") : (cone ? "FuselageCone" : "FuselageBody"))
-			: source.Name;
+			: source.name;
 		return FuselageManifoldUtility.BuildLoft(source, rear, front, offset, applySectionCutting, meshName);
 	}
 
-	private static PreviewMeshData BuildRawLoftData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront)
+	private static Mesh BuildRawLoftMesh(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront)
 	{
-		using var _ = new SampleProfiler("BuildRawLoftData");//GC和大量耗时  
+		using var _ = new SampleProfiler("BuildRawLoftMesh");//GC和大量耗时
 
 		rear.Sanitize();
 		front.Sanitize();
@@ -596,9 +597,9 @@ internal static class FuselageGeometry
 	}
 
 	// 按原游戏 Cone 样式构建“3 个控制截面 + 二次 Bezier 采样”的机身预览网格。 / Build the cone-style preview mesh using the original game's three control sections and quadratic Bezier sampling.
-	private static PreviewMeshData BuildRawConeData(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront, float noseconeRoundness)
+	private static Mesh BuildRawConeMesh(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool hollow, bool capRear, bool capFront, float noseconeRoundness)
 	{
-		using var _ = new SampleProfiler("BuildRawConeData");
+		using var _ = new SampleProfiler("BuildRawConeMesh");
 
 		rear.Sanitize();
 		front.Sanitize();
@@ -655,8 +656,8 @@ internal static class FuselageGeometry
 			frontInnerTip: innerTipPosition);
 	}
 
-	// 统一把 ring loft、端盖和可选 cone tip 收口组装成 PreviewMeshData。 / Assemble the ring loft, caps, and optional cone tip closures into one PreviewMeshData.
-	private static PreviewMeshData BuildMeshFromRings(
+	// 统一把 ring loft、端盖和可选 cone tip 收口组装成 Mesh。 / Assemble the ring loft, caps, and optional cone tip closures into one Mesh.
+	private static Mesh BuildMeshFromRings(
 		IReadOnlyList<RingProfile> outerRings,
 		IReadOnlyList<RingProfile> innerRings,
 		bool hollow,
@@ -749,7 +750,29 @@ internal static class FuselageGeometry
 			}
 		}
 
-		return new PreviewMeshData(meshName, vertices, normals, triangles);
+		return CreateMesh(meshName, vertices, normals, triangles);
+	}
+
+	private static Mesh CreateMesh(string meshName, IReadOnlyList<Vector3> vertices, IReadOnlyList<Vector3> normals, IReadOnlyList<int> triangles)
+	{
+		Mesh mesh = new Mesh
+		{
+			name = string.IsNullOrWhiteSpace(meshName) ? "PreviewMesh" : meshName
+		};
+		if (vertices == null || vertices.Count == 0)
+		{
+			return mesh;
+		}
+
+		mesh.indexFormat = vertices.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
+		mesh.SetVertices(vertices is List<Vector3> vertexList ? vertexList : new List<Vector3>(vertices));
+		if (normals != null && normals.Count == vertices.Count)
+		{
+			mesh.SetNormals(normals is List<Vector3> normalList ? normalList : new List<Vector3>(normals));
+		}
+		mesh.SetTriangles(triangles is List<int> triangleList ? triangleList : new List<int>(triangles ?? Array.Empty<int>()), 0, true);
+		mesh.RecalculateBounds();
+		return mesh;
 	}
 
 	// 构造一个原版 cone 使用的零尺寸 tip 控制截面；它只参与 Bezier 控制，不直接进入常规 ring 生成。 / Construct the original cone's zero-size tip control section for Bezier control only.

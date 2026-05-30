@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using UnityEngine;
 
 namespace SP2Builder.ManifoldRuntime
 {
@@ -14,15 +16,49 @@ namespace SP2Builder.ManifoldRuntime
 			_ptr = ptr;
 		}
 
-		public static ManifoldMeshHandle Create(PreviewMeshData meshData)
+		// 直接从 Unity Mesh 构造 native MeshGL。 / Build native MeshGL directly from a Unity Mesh.
+		public static ManifoldMeshHandle Create(Mesh mesh)
 		{
-			if (meshData == null || meshData.Vertices.Count < 3)
+			if (mesh == null || mesh.vertexCount < 3)
 			{
 				return null;
 			}
 
-			PackedManifoldVertex[] vertices = ManifoldPreviewMeshUtility.BuildVertexArray(meshData);
-			uint[] triangles = ManifoldPreviewMeshUtility.BuildTriangleArray(meshData);
+			List<Vector3> vertices = new List<Vector3>(mesh.vertexCount);
+			List<Vector3> normals = new List<Vector3>(mesh.vertexCount);
+			List<IReadOnlyList<int>> subMeshTriangles = new List<IReadOnlyList<int>>(Mathf.Max(1, mesh.subMeshCount));
+			mesh.GetVertices(vertices);
+			mesh.GetNormals(normals);
+			if (normals.Count != vertices.Count)
+			{
+				normals.Clear();
+			}
+
+			for (int subMesh = 0; subMesh < Mathf.Max(1, mesh.subMeshCount); subMesh++)
+			{
+				List<int> triangles = new List<int>();
+				mesh.GetTriangles(triangles, subMesh);
+				subMeshTriangles.Add(triangles);
+			}
+
+			return Create(vertices, normals, subMeshTriangles);
+		}
+
+		// 直接从托管网格数组构造 native MeshGL。 / Build native MeshGL directly from managed mesh arrays.
+		public static ManifoldMeshHandle Create(
+			IReadOnlyList<Vector3> vertexData,
+			IReadOnlyList<Vector3> normalData,
+			IReadOnlyList<IReadOnlyList<int>> subMeshTriangles,
+			IReadOnlyList<int> mergeFromVertices = null,
+			IReadOnlyList<int> mergeToVertices = null)
+		{
+			if (vertexData == null || vertexData.Count < 3)
+			{
+				return null;
+			}
+
+			PackedManifoldVertex[] vertices = BuildVertexArray(vertexData, normalData);
+			uint[] triangles = BuildTriangleArray(subMeshTriangles);
 			if (triangles.Length == 0)
 			{
 				return null;
@@ -32,14 +68,14 @@ namespace SP2Builder.ManifoldRuntime
 			uint[] runIndices = { 0u, (uint)(triangles.Length / 3) };
 			uint[] mergeFrom = null;
 			uint[] mergeTo = null;
-			if (meshData.MergeFromVertices.Count > 0 && meshData.MergeFromVertices.Count == meshData.MergeToVertices.Count)
+			if (mergeFromVertices != null && mergeToVertices != null && mergeFromVertices.Count > 0 && mergeFromVertices.Count == mergeToVertices.Count)
 			{
-				mergeFrom = new uint[meshData.MergeFromVertices.Count];
-				mergeTo = new uint[meshData.MergeToVertices.Count];
+				mergeFrom = new uint[mergeFromVertices.Count];
+				mergeTo = new uint[mergeToVertices.Count];
 				for (int i = 0; i < mergeFrom.Length; i++)
 				{
-					mergeFrom[i] = (uint)Math.Max(0, meshData.MergeFromVertices[i]);
-					mergeTo[i] = (uint)Math.Max(0, meshData.MergeToVertices[i]);
+					mergeFrom[i] = (uint)Math.Max(0, mergeFromVertices[i]);
+					mergeTo[i] = (uint)Math.Max(0, mergeToVertices[i]);
 				}
 			}
 			IntPtr storage = Marshal.AllocHGlobal((int)ManifoldNativeMethods.manifold_meshgl_size());
@@ -162,6 +198,50 @@ namespace SP2Builder.ManifoldRuntime
 					vertexHandle.Free();
 				}
 			}
+		}
+
+		private static PackedManifoldVertex[] BuildVertexArray(IReadOnlyList<Vector3> vertexData, IReadOnlyList<Vector3> normalData)
+		{
+			PackedManifoldVertex[] vertices = new PackedManifoldVertex[vertexData.Count];
+			bool hasNormals = normalData != null && normalData.Count == vertexData.Count;
+			for (int i = 0; i < vertices.Length; i++)
+			{
+				Vector3 normal = hasNormals ? normalData[i] : Vector3.up;
+				vertices[i] = new PackedManifoldVertex(vertexData[i], normal);
+			}
+			return vertices;
+		}
+
+		private static uint[] BuildTriangleArray(IReadOnlyList<IReadOnlyList<int>> subMeshTriangles)
+		{
+			if (subMeshTriangles == null || subMeshTriangles.Count == 0)
+			{
+				return Array.Empty<uint>();
+			}
+
+			int totalTriangleIndices = 0;
+			for (int i = 0; i < subMeshTriangles.Count; i++)
+			{
+				totalTriangleIndices += subMeshTriangles[i]?.Count ?? 0;
+			}
+
+			uint[] triangles = new uint[totalTriangleIndices];
+			int writeIndex = 0;
+			for (int subMesh = 0; subMesh < subMeshTriangles.Count; subMesh++)
+			{
+				IReadOnlyList<int> source = subMeshTriangles[subMesh];
+				if (source == null)
+				{
+					continue;
+				}
+
+				for (int i = 0; i < source.Count; i++)
+				{
+					triangles[writeIndex++] = (uint)Mathf.Max(0, source[i]);
+				}
+			}
+
+			return triangles;
 		}
 
 		public static ManifoldMeshHandle CreateFromManifold(ManifoldHandle manifold)

@@ -5,7 +5,7 @@ using UnityEngine;
 [System.Diagnostics.CodeAnalysis.SuppressMessage("Style", "IDE1006:Naming Styles", Justification = "Keep short face labels local to preview cutter helpers.")]
 public interface IFuselageCarver
 {
-	bool TryBuildCutPreviewData(FuselagePart target, out PreviewMeshData previewMeshData);
+	bool TryBuildCutMesh(FuselagePart target, out Mesh mesh);
 }
 
 internal static class FuselageCarverUtility
@@ -54,9 +54,9 @@ internal static class FuselageCarverUtility
 		return mesh;
 	}
 
-	public static PreviewMeshData BuildSolidCutPreviewData(IReadOnlyList<Vector2> outline, float depth, string meshName)
+	public static Mesh BuildSolidCutMesh(IReadOnlyList<Vector2> outline, float depth, string meshName)
 	{
-		return BuildExtrudedSolidMeshData(outline, depth, meshName);
+		return BuildExtrudedSolidMesh(outline, depth, meshName);
 	}
 
 	public static bool CanCarveTarget(Part source, FuselagePart target)
@@ -95,12 +95,15 @@ internal static class FuselageCarverUtility
 		return BuildWindowOutline(new Vector2(-halfWidth, halfWidth), new Vector2(-halfWidth, halfWidth), height, cornerRadius);
 	}
 
-	private static PreviewMeshData BuildExtrudedSolidMeshData(IReadOnlyList<Vector2> outline, float depth, string meshName)
+	private static Mesh BuildExtrudedSolidMesh(IReadOnlyList<Vector2> outline, float depth, string meshName)
 	{
-		PreviewMeshData data = new PreviewMeshData(meshName);
+		Mesh mesh = new Mesh
+		{
+			name = meshName
+		};
 		if (outline == null || outline.Count < 3)
 		{
-			return data;
+			return mesh;
 		}
 
 		List<Vector2> loop = new List<Vector2>(outline.Count);
@@ -111,47 +114,27 @@ internal static class FuselageCarverUtility
 		RemoveNearDuplicateLoopPoints(loop);
 		if (loop.Count < 3)
 		{
-			return data;
+			return mesh;
 		}
 
 		float halfDepth = Mathf.Max(0.01f, depth) * 0.5f;
 		Vector2 centroid2D = ComputePolygonCentroid(loop);
-		List<Vector3> vertices = new List<Vector3>(loop.Count * 4);
+		List<Vector3> vertices = new List<Vector3>(loop.Count * 2);
 		List<int> triangles = new List<int>((loop.Count - 2) * 6 + loop.Count * 6);
 		int[] backCapIndices = new int[loop.Count];
-		int[] backSideIndices = new int[loop.Count];
-		int[] frontSideIndices = new int[loop.Count];
 		int[] frontCapIndices = new int[loop.Count];
 		for (int i = 0; i < loop.Count; i++)
 		{
 			Vector2 point = loop[i];
-			Vector2 radial = point - centroid2D;
-			if (radial.sqrMagnitude <= Epsilon * Epsilon)
-			{
-				Vector2 previous = loop[(i - 1 + loop.Count) % loop.Count];
-				Vector2 next = loop[(i + 1) % loop.Count];
-				radial = Rotate((next - previous).normalized);
-			}
-			Vector3 sideNormal = new Vector3(radial.x, radial.y, 0f).normalized;
-
 			backCapIndices[i] = vertices.Count;
 			vertices.Add(new Vector3(point.x, point.y, -halfDepth));
-			backSideIndices[i] = vertices.Count;
-			vertices.Add(new Vector3(point.x, point.y, -halfDepth));
-			frontSideIndices[i] = vertices.Count;
-			vertices.Add(new Vector3(point.x, point.y, halfDepth));
+		}
+
+		for (int i = 0; i < loop.Count; i++)
+		{
+			Vector2 point = loop[i];
 			frontCapIndices[i] = vertices.Count;
 			vertices.Add(new Vector3(point.x, point.y, halfDepth));
-
-			data.MergeFromVertices.Add(backCapIndices[i]);
-			data.MergeToVertices.Add(backSideIndices[i]);
-			data.MergeFromVertices.Add(frontCapIndices[i]);
-			data.MergeToVertices.Add(frontSideIndices[i]);
-
-			data.Normals.Add(Vector3.back);
-			data.Normals.Add(sideNormal.sqrMagnitude > Epsilon * Epsilon ? sideNormal : Vector3.right);
-			data.Normals.Add(sideNormal.sqrMagnitude > Epsilon * Epsilon ? sideNormal : Vector3.right);
-			data.Normals.Add(Vector3.forward);
 		}
 
 		for (int i = 1; i < loop.Count - 1; i++)
@@ -163,10 +146,10 @@ internal static class FuselageCarverUtility
 		for (int i = 0; i < loop.Count; i++)
 		{
 			int next = (i + 1) % loop.Count;
-			int backA = backSideIndices[i];
-			int backB = backSideIndices[next];
-			int frontA = frontSideIndices[i];
-			int frontB = frontSideIndices[next];
+			int backA = backCapIndices[i];
+			int backB = backCapIndices[next];
+			int frontA = frontCapIndices[i];
+			int frontB = frontCapIndices[next];
 			Vector3 expectedNormal = new Vector3(
 				((loop[i].x + loop[next].x) * 0.5f) - centroid2D.x,
 				((loop[i].y + loop[next].y) * 0.5f) - centroid2D.y,
@@ -180,9 +163,11 @@ internal static class FuselageCarverUtility
 			AddOrientedMeshTriangle(triangles, vertices, backA, frontB, frontA, expectedNormal);
 		}
 
-		data.Vertices.AddRange(vertices);
-		data.SubMeshTriangles[0].AddRange(triangles);
-		return data;
+		mesh.SetVertices(vertices);
+		mesh.SetTriangles(triangles, 0, true);
+		mesh.RecalculateNormals();
+		mesh.RecalculateBounds();
+		return mesh;
 	}
 
 	private static List<Vector2> BuildRoundedConvexOutline(List<Vector2> polygon, float cornerRadius)
