@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Xml.Linq;
 using UnityEngine;
 using SP2Builder.ManifoldRuntime;
@@ -175,9 +176,10 @@ public class FuselagePart : Part
 		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
 	}
 
-	// 构建 loft/boolean 所需的数据快照，并立即生成 Unity Mesh。 / Snapshot the fuselage inputs for loft/boolean generation and build the Unity Mesh immediately.
+	// 构建 loft/boolean 所需的数据快照，并把 Mesh 生成交给后台 Job。 / Snapshot the fuselage inputs and dispatch mesh generation to a background job.
 	private void QueueMeshProcess(bool capRear, bool capFront, bool applySectionCutting, bool applyTargetedCarvers)
 	{
+		DestroyJobResult(Interlocked.Exchange(ref _completedMeshJob, null));
 		MeshProcessJob job = new MeshProcessJob
 		{
 			rearSection = _rearSection,
@@ -191,7 +193,7 @@ public class FuselagePart : Part
 			noseconeRoundness = _noseconeRoundness,
 			version = Interlocked.Increment(ref _meshProcessVersion),
 			worldMatrix = transform.localToWorldMatrix,
-			cutterMeshList = new List<Mesh>(),
+			cutterMeshList = new List<GeneratedMeshData>(),
 			cutterMeshMatrixList = new List<Matrix4x4>()
 		};
 
@@ -202,22 +204,15 @@ public class FuselagePart : Part
 				CollectTargetedCarvers(job);
 			}
 
-			RunMeshProcess(job);
+			Task.Run(() => RunMeshProcess(job));
 		}
 		catch (Exception exception)
 		{
 			job.error = exception;
-			if (job.version == Interlocked.CompareExchange(ref _meshProcessVersion, 0, 0))
-			{
-				_completedMeshJob = job;
-			}
-		}
-		finally
-		{
 			DestroyJobCutterMeshes(job);
+			PublishCompletedMeshJob(job);
+			ApplyCompletedMeshJob();
 		}
-
-		ApplyCompletedMeshJob();
 	}
 
 	// 在主线程收集所有目标切割体的闭体 Mesh 和矩阵快照。 / Collect closed Mesh cutters and matrix snapshots on the main thread.
@@ -236,15 +231,23 @@ public class FuselagePart : Part
 
 			if (!carver.TryBuildCutMesh(this, out Mesh cutterMesh) || cutterMesh == null || cutterMesh.vertexCount == 0)
 			{
+				DestroyOwnedObject(cutterMesh);
 				throw new InvalidOperationException($"Failed to build targeted cutter data for {carverComponent.name}.");
 			}
 
-			job.cutterMeshList.Add(cutterMesh);
+			GeneratedMeshData cutterData = GeneratedMeshData.FromMesh(cutterMesh);
+			DestroyOwnedObject(cutterMesh);
+			if (cutterData == null || cutterData.VertexCount == 0)
+			{
+				throw new InvalidOperationException($"Failed to snapshot targeted cutter data for {carverComponent.name}.");
+			}
+
+			job.cutterMeshList.Add(cutterData);
 			job.cutterMeshMatrixList.Add(carverComponent.transform.localToWorldMatrix);
 		}
 	}
 
-	// 销毁一次构建任务里生成的 cutter 临时 Mesh。 / Destroy temporary cutter meshes generated for one build job.
+	// 清空一次构建任务里生成的 cutter 托管数据。 / Clear temporary cutter data generated for one build job.
 	private static void DestroyJobCutterMeshes(MeshProcessJob job)
 	{
 		if (job?.cutterMeshList == null)
@@ -254,7 +257,7 @@ public class FuselagePart : Part
 
 		for (int i = 0; i < job.cutterMeshList.Count; i++)
 		{
-			DestroyOwnedObject(job.cutterMeshList[i]);
+			job.cutterMeshList[i] = null;
 		}
 		job.cutterMeshList.Clear();
 	}
@@ -262,58 +265,74 @@ public class FuselagePart : Part
 	// 执行 loft 与布尔计算。 / Execute loft and boolean processing.
 	private void RunMeshProcess(MeshProcessJob job)
 	{
-		Mesh mesh = null;
+		GeneratedMeshData meshData = null;
 		try
 		{
-			mesh = FuselageGeometry.BuildLoftMesh(job.rearSection, job.frontSection, job.offset, job.hollow, job.cone, job.noseconeRoundness, job.capRear, job.capFront, job.applySectionCutting);
+			meshData = FuselageGeometry.BuildLoftMeshData(job.rearSection, job.frontSection, job.offset, job.hollow, job.cone, job.noseconeRoundness, job.capRear, job.capFront, job.applySectionCutting);
 			if (job.cutterMeshList != null && job.cutterMeshList.Count > 0)
 			{
-				mesh = ApplyTargetedCarvers(job, mesh);
+				meshData = ApplyTargetedCarvers(job, meshData);
 			}
 
-			job.resultMesh = mesh;
-			mesh = null;
+			job.resultMeshData = meshData;
+			meshData = null;
 		}
 		catch (Exception exception)
 		{
-			DestroyOwnedObject(mesh);
+			meshData = null;
 			job.error = exception;
 		}
-
-        if (job.version == Interlocked.CompareExchange(ref _meshProcessVersion, 0, 0))
+		finally
 		{
-			_completedMeshJob = job;
+			DestroyJobCutterMeshes(job);
+		}
+
+		PublishCompletedMeshJob(job);
+	}
+
+	// 发布后台 Job 结果；过期 Job 立即销毁未移交的 Mesh。 / Publish a finished job, destroying meshes from stale jobs immediately.
+	private void PublishCompletedMeshJob(MeshProcessJob job)
+	{
+		if (job == null)
+		{
+			return;
+		}
+
+		if (job.version != Interlocked.CompareExchange(ref _meshProcessVersion, 0, 0))
+		{
+			DestroyJobResult(job);
+			return;
+		}
+
+		MeshProcessJob replacedJob = Interlocked.Exchange(ref _completedMeshJob, job);
+		if (replacedJob != null && !ReferenceEquals(replacedJob, job))
+		{
+			DestroyJobResult(replacedJob);
 		}
 	}
 
-	// 对 Mesh 应用所有定向 cutter。 / Apply all targeted cutters to the Mesh.
-	private static Mesh ApplyTargetedCarvers(MeshProcessJob job, Mesh source)
+	// 对托管网格数据应用所有定向 cutter。 / Apply all targeted cutters to the managed mesh data.
+	private static GeneratedMeshData ApplyTargetedCarvers(MeshProcessJob job, GeneratedMeshData source)
 	{
 		if (source == null)
 		{
 			return null;
 		}
 
-		Mesh carved = source;
-		string carvedMeshName = string.IsNullOrEmpty(source.name) ? "FuselageCarved" : source.name + "_Carved";
+		GeneratedMeshData carved = source;
+		string carvedMeshName = string.IsNullOrEmpty(source.Name) ? "FuselageCarved" : source.Name + "_Carved";
 		for (int i = 0; i < job.cutterMeshList.Count; i++)
 		{
-			Mesh cutter = job.cutterMeshList[i];
+			GeneratedMeshData cutter = job.cutterMeshList[i];
 			Matrix4x4 cutterToTarget = job.worldMatrix.inverse * job.cutterMeshMatrixList[i];
-			Mesh previous = carved;
-			Mesh next = FuselageManifoldUtility.Subtract(previous, cutter, cutterToTarget, carvedMeshName);
+			GeneratedMeshData next = FuselageManifoldUtility.Subtract(carved, cutter, cutterToTarget, carvedMeshName);
 
 			if (next == null)
 			{
-				DestroyOwnedObject(previous);
 				return null;
 			}
 
-			if (!ReferenceEquals(previous, next))
-			{
-				DestroyOwnedObject(previous);
-			}
-			next.name = carvedMeshName;
+			next.Name = carvedMeshName;
 			carved = next;
 		}
 
@@ -323,7 +342,7 @@ public class FuselagePart : Part
 	// 消费计算结果并回填 sharedMesh。 / Consume completed mesh jobs and assign the resulting sharedMesh.
 	private void ApplyCompletedMeshJob()
 	{
-		MeshProcessJob job = _completedMeshJob;
+		MeshProcessJob job = Interlocked.Exchange(ref _completedMeshJob, null);
 		if (job == null)
 		{
 			return;
@@ -331,38 +350,53 @@ public class FuselagePart : Part
 
 		if (job.version != _meshProcessVersion)
 		{
-			_completedMeshJob = null;
+			DestroyJobResult(job);
 			return;
 		}
 
-		_completedMeshJob = null;
 		if (job.error != null)
 		{
+			DestroyJobResult(job);
 			Debug.LogException(job.error, this);
 			ClearPreviewMesh();
 			return;
 		}
 
-		Mesh previousMesh = _meshFilter != null ? _meshFilter.sharedMesh : null;
-		Mesh mesh = job.resultMesh;
-		if (mesh == null || mesh.vertexCount == 0)
+		GeneratedMeshData meshData = job.resultMeshData;
+		job.resultMeshData = null;
+		if (meshData == null || meshData.VertexCount == 0)
 		{
 			ClearPreviewMesh();
 			return;
 		}
 
+		if (_meshFilter == null || _meshRenderer == null)
+		{
+			return;
+		}
+
+		Mesh previousMesh = _meshFilter.sharedMesh;
+		Mesh mesh = meshData.ToMesh();
+		meshData = null;
+		bool shouldDestroyPreviousMesh = previousMesh != null && !ReferenceEquals(previousMesh, mesh);
 		_meshFilter.sharedMesh = mesh;
-		if (previousMesh != null && !ReferenceEquals(previousMesh, mesh))
+		mesh = null;
+		if (shouldDestroyPreviousMesh)
 		{
 			DestroyOwnedObject(previousMesh);
 		}
 		_meshRenderer.sharedMaterial = PreviewMaterialFactory.GetFuselageMaterial(this, _glass);
+	}
 
-		Craft craft = GetOwningCraft();
-		if (craft != null)
+	// 销毁尚未交给 MeshFilter 的 Job 结果并清空引用。 / Destroy a job result that has not been handed to MeshFilter and clear the reference.
+	private static void DestroyJobResult(MeshProcessJob job)
+	{
+		if (job == null)
 		{
-			FuselagePart.ApplyNeighbourSmoothing(craft, new[] { PartId });
+			return;
 		}
+
+		job.resultMeshData = null;
 	}
 
 	// 清空当前机身预览网格，但保留预览材质状态。 / Clear the current fuselage preview mesh while preserving the preview material state.
@@ -535,7 +569,7 @@ public class FuselagePart : Part
 	{
 		Craft.UnregisterEditorUpdate(ApplyCompletedMeshJob);
 		Interlocked.Increment(ref _meshProcessVersion);
-		_completedMeshJob = null;
+		DestroyJobResult(Interlocked.Exchange(ref _completedMeshJob, null));
        base.OnDisable();
 	}
 

@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.Rendering;
 
 namespace SP2Builder.ManifoldRuntime
 {
@@ -10,7 +9,7 @@ namespace SP2Builder.ManifoldRuntime
 		private const double MinimumValidVolume = 1.1920928955078125E-10d;
 
 		// 把机身 loft 输入转成 manifold，并在需要时执行 section-cutting 相交。 / Convert loft input into a manifold and optionally apply section-cutting intersection.
-		public static Mesh BuildLoft(Mesh source, FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool applySectionCutting, string meshName)
+		public static GeneratedMeshData BuildLoft(GeneratedMeshData source, FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool applySectionCutting, string meshName)
 		{
 			if (source == null)
 			{
@@ -19,18 +18,17 @@ namespace SP2Builder.ManifoldRuntime
 
 			if (!applySectionCutting)
 			{
-				source.name = meshName;
+				source.Name = meshName;
 				return source;
 			}
 
 			if (!ManifoldRuntimeAvailability.IsAvailable)
 			{
 				ManifoldRuntimeAvailability.LogUnavailableOnce("fuselage loft");
-				DestroyGeneratedMesh(source);
 				return null;
 			}
 
-			Mesh cutVolume = null;
+			GeneratedMeshData cutVolume = null;
 			try
 			{
 				using ManifoldHandle sourceManifold = CreateManifold(source, out ManifoldError sourceStatus);
@@ -43,7 +41,7 @@ namespace SP2Builder.ManifoldRuntime
 				cutVolume = BuildCutVolume(rear, front, offset, meshName + "_Volume");
 				if (cutVolume == null)
 				{
-					return ToMesh(sourceManifold, meshName);
+					return ToMeshData(sourceManifold, meshName);
 				}
 
 				using ManifoldHandle cutManifold = CreateManifold(cutVolume, out ManifoldError cutStatus);
@@ -61,7 +59,7 @@ namespace SP2Builder.ManifoldRuntime
 					return null;
 				}
 
-				return ToMesh(result, meshName);
+				return ToMeshData(result, meshName);
 			}
 			catch (Exception exception) when (
 				exception is DllNotFoundException
@@ -73,20 +71,20 @@ namespace SP2Builder.ManifoldRuntime
 			}
 			finally
 			{
-				DestroyGeneratedMesh(cutVolume);
-				DestroyGeneratedMesh(source);
+				cutVolume = null;
+				source = null;
 			}
 		}
 
 		// 用 runtime manifold 对机身和 cutter 执行减法布尔。 / Subtract a cutter from a fuselage mesh using the runtime manifold path.
-		public static Mesh Subtract(Mesh source, Mesh cutter, Matrix4x4 cutterToSource, string meshName)
+		public static GeneratedMeshData Subtract(GeneratedMeshData source, GeneratedMeshData cutter, Matrix4x4 cutterToSource, string meshName)
 		{
 			if (source == null)
 			{
 				return null;
 			}
 
-			if (cutter == null || cutter.vertexCount == 0)
+			if (cutter == null || cutter.VertexCount == 0)
 			{
 				return source;
 			}
@@ -101,7 +99,7 @@ namespace SP2Builder.ManifoldRuntime
 		}
 
 		// 统一封装 runtime manifold 的 source/cutter 构造和布尔执行。 / Share the source/cutter construction and boolean execution path for runtime manifold operations.
-		private static Mesh ExecuteBoolean(Mesh source, Mesh cutter, Matrix4x4 cutterToSource, ManifoldOpType operation, string meshName, string context)
+		private static GeneratedMeshData ExecuteBoolean(GeneratedMeshData source, GeneratedMeshData cutter, Matrix4x4 cutterToSource, ManifoldOpType operation, string meshName, string context)
 		{
 			try
 			{
@@ -129,10 +127,10 @@ namespace SP2Builder.ManifoldRuntime
 					return null;
 				}
 
-				Mesh output = result.ToMesh(meshName);
+				GeneratedMeshData output = result.ToMeshData(meshName);
 				if (output != null)
 				{
-					output.name = meshName;
+					output.Name = meshName;
 				}
 				return output;
 			}
@@ -156,7 +154,7 @@ namespace SP2Builder.ManifoldRuntime
 		}
 
 		// 为布尔运算准备 cutter manifold，必要时先把变换烘焙进 Mesh。 / Prepare the cutter manifold for booleans, baking the transform into a Mesh when needed.
-		private static ManifoldHandle CreateBooleanCutterManifold(Mesh cutter, Matrix4x4 cutterToSource, string context)
+		private static ManifoldHandle CreateBooleanCutterManifold(GeneratedMeshData cutter, Matrix4x4 cutterToSource, string context)
 		{
 			using ManifoldHandle cutterLocalManifold = CreateManifold(cutter, out ManifoldError cutterStatus);
 			if (!IsUsable(cutterLocalManifold, cutterStatus))
@@ -173,10 +171,10 @@ namespace SP2Builder.ManifoldRuntime
 			}
 
 			transformedCutter?.Dispose();
-			Mesh bakedCutter = null;
+			GeneratedMeshData bakedCutter = null;
 			try
 			{
-				bakedCutter = BakeMeshTransform(cutter, cutterToSource);
+				bakedCutter = BakeMeshDataTransform(cutter, cutterToSource);
 				ManifoldHandle bakedCutterManifold = CreateManifold(bakedCutter, out ManifoldError bakedStatus);
 				if (IsUsable(bakedCutterManifold, bakedStatus))
 				{
@@ -189,11 +187,11 @@ namespace SP2Builder.ManifoldRuntime
 			}
 			finally
 			{
-				DestroyGeneratedMesh(bakedCutter);
+				bakedCutter = null;
 			}
 		}
 
-		private static ManifoldHandle CreateManifold(Mesh mesh, out ManifoldError status)
+		private static ManifoldHandle CreateManifold(GeneratedMeshData mesh, out ManifoldError status)
 		{
 			if (mesh == null)
 			{
@@ -201,77 +199,61 @@ namespace SP2Builder.ManifoldRuntime
 				return null;
 			}
 
-			return ManifoldHandle.Create(mesh, out status);
+			return ManifoldHandle.Create(mesh.Vertices, mesh.Normals, new IReadOnlyList<int>[] { mesh.Triangles }, null, null, out status);
 		}
 
-		// 把一个 native manifold 安全地导出成带名字的 Mesh。 / Safely export a native manifold into a named Mesh instance.
-		private static Mesh ToMesh(ManifoldHandle manifold, string meshName)
+		// 把一个 native manifold 安全地导出成带名字的托管网格数据。 / Safely export a native manifold into named managed mesh data.
+		private static GeneratedMeshData ToMeshData(ManifoldHandle manifold, string meshName)
 		{
-			Mesh output = manifold?.ToMesh(meshName);
+			GeneratedMeshData output = manifold?.ToMeshData(meshName);
 			if (output != null)
 			{
-				output.name = meshName;
+				output.Name = meshName;
 			}
 			return output;
 		}
 
-		// 把矩阵直接烘到 Mesh 顶点和索引上。 / Bake a matrix directly into Mesh vertices and triangle winding.
-		private static Mesh BakeMeshTransform(Mesh source, Matrix4x4 transform)
+		// 把矩阵直接烘到托管网格数据顶点和索引上。 / Bake a matrix directly into managed mesh vertices and triangle winding.
+		private static GeneratedMeshData BakeMeshDataTransform(GeneratedMeshData source, Matrix4x4 transform)
 		{
-			Mesh transformed = new Mesh
-			{
-				name = string.IsNullOrWhiteSpace(source?.name) ? "PreviewMesh" : source.name + "_Baked"
-			};
 			if (source == null)
 			{
-				return transformed;
+				return new GeneratedMeshData("PreviewMesh_Baked");
 			}
 
-			List<Vector3> vertices = new List<Vector3>(source.vertexCount);
-			source.GetVertices(vertices);
+			List<Vector3> vertices = new List<Vector3>(source.Vertices);
 			for (int i = 0; i < vertices.Count; i++)
 			{
 				vertices[i] = transform.MultiplyPoint3x4(vertices[i]);
 			}
-			transformed.indexFormat = vertices.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
-			transformed.SetVertices(vertices);
 
 			bool mirrored = GetLinearDeterminant(transform) < 0f;
-			transformed.subMeshCount = Mathf.Max(1, source.subMeshCount);
-			for (int subMesh = 0; subMesh < source.subMeshCount; subMesh++)
+			List<int> triangles = new List<int>(source.Triangles?.Count ?? 0);
+			if (!mirrored)
 			{
-				List<int> sourceTriangles = new List<int>();
-				source.GetTriangles(sourceTriangles, subMesh);
-				if (!mirrored)
-				{
-					transformed.SetTriangles(sourceTriangles, subMesh, true);
-					continue;
-				}
-
-				List<int> targetTriangles = new List<int>(sourceTriangles.Count);
+				triangles.AddRange(source.Triangles ?? new List<int>());
+			}
+			else
+			{
+				List<int> sourceTriangles = source.Triangles ?? new List<int>();
 				for (int i = 0; i + 2 < sourceTriangles.Count; i += 3)
 				{
-					targetTriangles.Add(sourceTriangles[i]);
-					targetTriangles.Add(sourceTriangles[i + 2]);
-					targetTriangles.Add(sourceTriangles[i + 1]);
+					triangles.Add(sourceTriangles[i]);
+					triangles.Add(sourceTriangles[i + 2]);
+					triangles.Add(sourceTriangles[i + 1]);
 				}
-				transformed.SetTriangles(targetTriangles, subMesh, true);
 			}
 
-			transformed.RecalculateNormals();
-			transformed.RecalculateBounds();
-			return transformed;
-		}
-
-		// 销毁 manifold 运算期间生成的临时 Mesh。 / Destroy temporary meshes generated during manifold operations.
-		private static void DestroyGeneratedMesh(Mesh mesh)
-		{
-			if (mesh == null)
+			List<Vector3> normals = new List<Vector3>(source.Normals?.Count ?? 0);
+			if (source.Normals != null && source.Normals.Count == source.VertexCount)
 			{
-				return;
+				for (int i = 0; i < source.Normals.Count; i++)
+				{
+					normals.Add(transform.MultiplyVector(source.Normals[i]).normalized);
+				}
 			}
 
-			UnityEngine.Object.DestroyImmediate(mesh);
+			return new GeneratedMeshData(string.IsNullOrWhiteSpace(source.Name) ? "PreviewMesh_Baked" : source.Name + "_Baked", vertices, normals, triangles);
 		}
 
 		// 计算矩阵线性部分的行列式，以判断是否发生镜像翻转。 / Compute the determinant of the matrix linear part to detect mirrored transforms.
@@ -284,7 +266,7 @@ namespace SP2Builder.ManifoldRuntime
 		}
 
 		// 根据前后截面的 cutting 范围生成用于相交的闭体 cut-volume。 / Build the closed cut-volume used to intersect the fuselage against front and rear cutting ranges.
-		private static Mesh BuildCutVolume(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, string meshName)
+		private static GeneratedMeshData BuildCutVolume(FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, string meshName)
 		{
 			if (!HasSectionCutting(rear) && !HasSectionCutting(front))
 			{
@@ -311,7 +293,7 @@ namespace SP2Builder.ManifoldRuntime
 		}
 
 		// 从两端截面的矩形包围变化构建一个可 manifold 化的裁切闭体。 / Construct a manifold-friendly clipping volume from the changing rectangular bounds of both end sections.
-		private static Mesh BuildCutVolumeData(Vector2 min1, Vector2 max1, Vector2 min2, Vector2 max2, float zOffset, string meshName)
+		private static GeneratedMeshData BuildCutVolumeData(Vector2 min1, Vector2 max1, Vector2 min2, Vector2 max2, float zOffset, string meshName)
 		{
 			if (zOffset < 1.4E-44f)
 			{
@@ -489,7 +471,7 @@ namespace SP2Builder.ManifoldRuntime
 					new Vector3(endMin.x, endMax.y, maxZ));
 			}
 
-			return builder.ToMesh();
+			return builder.ToMeshData();
 		}
 
 		// 判断一个截面是否启用了任意方向的 cutting。 / Check whether a section enables cutting on any side.
@@ -581,24 +563,43 @@ namespace SP2Builder.ManifoldRuntime
 				AddTriangle(a, d, c);
 			}
 
-			// 把累计的 cut-volume 三角形输出为 Mesh。 / Export the accumulated cut-volume triangles as a Mesh.
-			public Mesh ToMesh()
+			// 把累计的 cut-volume 三角形输出为托管网格数据。 / Export the accumulated cut-volume triangles as managed mesh data.
+			public GeneratedMeshData ToMeshData()
 			{
 				if (_triangles.Count == 0)
 				{
 					return null;
 				}
 
-				Mesh result = new Mesh
+				List<Vector3> normals = new List<Vector3>(_vertices.Count);
+				for (int i = 0; i < _vertices.Count; i++)
 				{
-					name = _meshName
-				};
-				result.indexFormat = _vertices.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
-				result.SetVertices(_vertices);
-				result.SetTriangles(_triangles, 0, true);
-				result.RecalculateNormals();
-				result.RecalculateBounds();
-				return result;
+					normals.Add(Vector3.zero);
+				}
+
+				for (int i = 0; i + 2 < _triangles.Count; i += 3)
+				{
+					int a = _triangles[i];
+					int b = _triangles[i + 1];
+					int c = _triangles[i + 2];
+					Vector3 normal = Vector3.Cross(_vertices[b] - _vertices[a], _vertices[c] - _vertices[a]);
+					if (normal.sqrMagnitude <= 0.0000001f)
+					{
+						continue;
+					}
+
+					normal.Normalize();
+					normals[a] += normal;
+					normals[b] += normal;
+					normals[c] += normal;
+				}
+
+				for (int i = 0; i < normals.Count; i++)
+				{
+					normals[i] = normals[i].sqrMagnitude > 0.0000001f ? normals[i].normalized : Vector3.up;
+				}
+
+				return new GeneratedMeshData(_meshName, _vertices, normals, _triangles);
 			}
 
 			// 以独立顶点的方式追加一个三角面。 / Append one triangle face using independent vertices.

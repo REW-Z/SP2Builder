@@ -143,7 +143,13 @@ namespace SP2Builder.ManifoldRuntime
 		// 把当前 native manifold 重新导出成 Unity Mesh。 / Export the current native manifold back into a Unity Mesh.
 		public Mesh ToMesh(string meshName)
 		{
-			return ManifoldMeshExportUtility.ToMesh(this, meshName);
+			return ManifoldMeshExportUtility.ToMeshData(this, meshName)?.ToMesh();
+		}
+
+		// 把当前 native manifold 重新导出成后台安全的托管网格数据。 / Export the current native manifold into background-safe managed mesh data.
+		public GeneratedMeshData ToMeshData(string meshName)
+		{
+			return ManifoldMeshExportUtility.ToMeshData(this, meshName);
 		}
 
 		// 释放 native manifold 占用的托管外资源。 / Release the unmanaged resources held by the native manifold.

@@ -2,13 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using UnityEngine;
-using UnityEngine.Rendering;
 
 namespace SP2Builder.ManifoldRuntime
 {
 	internal static class ManifoldMeshExportUtility
 	{
-		public static Mesh ToMesh(ManifoldHandle manifold, string meshName)
+		public static GeneratedMeshData ToMeshData(ManifoldHandle manifold, string meshName)
 		{
 			if (manifold == null || manifold.Ptr == IntPtr.Zero)
 			{
@@ -23,13 +22,9 @@ namespace SP2Builder.ManifoldRuntime
 
 			int floatCount = (int)ManifoldNativeMethods.manifold_meshgl_vert_properties_length(meshGl.Ptr);
 			int triangleCount = (int)ManifoldNativeMethods.manifold_meshgl_tri_length(meshGl.Ptr);
-			Mesh result = new Mesh
-			{
-				name = meshName
-			};
 			if (floatCount <= 0 || triangleCount < 0 || floatCount % 6 != 0)
 			{
-				return result;
+				return new GeneratedMeshData(meshName);
 			}
 
 			PackedManifoldVertex[] vertices = new PackedManifoldVertex[floatCount / 6];
@@ -69,12 +64,7 @@ namespace SP2Builder.ManifoldRuntime
 				outputTriangles.Add((int)triangles[i]);
 			}
 
-			result.indexFormat = outputVertices.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16;
-			result.SetVertices(outputVertices);
-			result.SetNormals(outputNormals);
-			result.SetTriangles(outputTriangles, 0, true);
-			result.RecalculateBounds();
-			return result;
+			return new GeneratedMeshData(meshName, outputVertices, outputNormals, outputTriangles);
 		}
 	}
 }

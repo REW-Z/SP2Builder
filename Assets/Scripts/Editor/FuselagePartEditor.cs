@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Xml.Linq;
 using UnityEditor;
 using UnityEngine;
@@ -1182,6 +1183,8 @@ internal static class PartInspectorUtility
 {
 	private const string CloneSelectedMenuPath = "Tools/SP2 Craft Editor/Part/Clone Selected #r";
 
+	private const string SymmetricCopySelectedMenuPath = "Tools/SP2 Craft Editor/Part/Symmetric Copy Selected #s";
+
 	public static void DrawPartIdentity(Part part)
 	{
 		if (part == null)
@@ -1245,18 +1248,35 @@ internal static class PartInspectorUtility
 	[MenuItem(CloneSelectedMenuPath)]
 	private static void CloneSelectedPart()
 	{
-		if (!TryGetSelectedPart(out Part part, out Craft craft))
+		if (!TryGetSelectedParts(out Part[] parts, requireSymmetricSupport: false))
 		{
 			return;
 		}
 
-		ClonePart(craft, part);
+		CloneParts(parts, mirrored: false);
 	}
 
 	[MenuItem(CloneSelectedMenuPath, true)]
 	private static bool ValidateCloneSelectedPart()
 	{
-		return TryGetSelectedPart(out _, out _);
+		return TryGetSelectedParts(out _, requireSymmetricSupport: false);
+	}
+
+	[MenuItem(SymmetricCopySelectedMenuPath)]
+	private static void SymmetricCopySelectedPart()
+	{
+		if (!TryGetSelectedParts(out Part[] parts, requireSymmetricSupport: true))
+		{
+			return;
+		}
+
+		CloneParts(parts, mirrored: true);
+	}
+
+	[MenuItem(SymmetricCopySelectedMenuPath, true)]
+	private static bool ValidateSymmetricCopySelectedPart()
+	{
+		return TryGetSelectedParts(out _, requireSymmetricSupport: true);
 	}
 
 	public static void DrawCarverRefreshButton(Part part)
@@ -1325,48 +1345,87 @@ internal static class PartInspectorUtility
 
 	private static void ClonePart(Craft craft, Part source)
 	{
-		if (craft == null || source == null)
-		{
-			return;
-		}
-
-		Part clone = craft.ClonePart(source);
-		if (clone == null)
-		{
-			return;
-		}
-
-		Undo.RegisterCreatedObjectUndo(clone.gameObject, "Clone Part");
-		EditorUtility.SetDirty(craft);
-		Selection.activeGameObject = clone.gameObject;
-		SceneView.RepaintAll();
-	}
-
-	private static bool TryGetSelectedPart(out Part part, out Craft craft)
-	{
-		GameObject activeGameObject = Selection.activeGameObject;
-		part = activeGameObject != null ? activeGameObject.GetComponent<Part>() : null;
-		craft = part != null ? part.GetComponentInParent<Craft>() : null;
-		return part != null && craft != null;
+		CloneParts(new[] { source }, mirrored: false);
 	}
 
 	private static void SymmetricCopyPart(Craft craft, Part source)
 	{
-		if (craft == null || source == null)
+		CloneParts(new[] { source }, mirrored: true);
+	}
+
+	private static void CloneParts(IReadOnlyList<Part> sources, bool mirrored)
+	{
+		if (sources == null || sources.Count == 0)
 		{
 			return;
 		}
 
-		Part clone = craft.ClonePartMirrored(source);
-		if (clone == null)
+		string actionName = mirrored ? "Symmetric Copy Parts" : "Clone Parts";
+		int undoGroup = Undo.GetCurrentGroup();
+		Undo.SetCurrentGroupName(actionName);
+
+		List<Object> selectedClones = new List<Object>();
+		HashSet<Craft> changedCrafts = new HashSet<Craft>();
+		for (int i = 0; i < sources.Count; i++)
 		{
-			return;
+			Part source = sources[i];
+			Craft craft = source != null ? source.GetComponentInParent<Craft>() : null;
+			if (craft == null || (mirrored && !SupportsSymmetricCopy(source)))
+			{
+				continue;
+			}
+
+			Part clone = mirrored
+				? craft.ClonePartMirrored(source, rebuildPreview: false)
+				: craft.ClonePart(source, rebuildPreview: false);
+			if (clone == null)
+			{
+				continue;
+			}
+
+			Undo.RegisterCreatedObjectUndo(clone.gameObject, actionName);
+			EditorUtility.SetDirty(craft);
+			changedCrafts.Add(craft);
+			selectedClones.Add(clone.gameObject);
 		}
 
-		Undo.RegisterCreatedObjectUndo(clone.gameObject, "Symmetric Copy Part");
-		EditorUtility.SetDirty(craft);
-		Selection.activeGameObject = clone.gameObject;
+		foreach (Craft craft in changedCrafts)
+		{
+			craft.RebuildAllPreviews();
+		}
+
+		if (selectedClones.Count > 0)
+		{
+			Selection.objects = selectedClones.ToArray();
+		}
+
+		Undo.CollapseUndoOperations(undoGroup);
 		SceneView.RepaintAll();
+	}
+
+	private static bool TryGetSelectedParts(out Part[] parts, bool requireSymmetricSupport)
+	{
+		parts = Selection.GetFiltered<Part>(SelectionMode.Editable | SelectionMode.ExcludePrefab | SelectionMode.TopLevel)
+			.Where(part => part != null
+				&& part.GetComponentInParent<Craft>() != null
+				&& (!requireSymmetricSupport || SupportsSymmetricCopy(part)))
+			.Distinct()
+			.ToArray();
+		return parts.Length > 0;
+	}
+
+	private static bool TryGetSelectedPart(out Part part, out Craft craft)
+	{
+		if (!TryGetSelectedParts(out Part[] parts, requireSymmetricSupport: false) || parts.Length != 1)
+		{
+			part = null;
+			craft = null;
+			return false;
+		}
+
+		part = parts[0];
+		craft = part != null ? part.GetComponentInParent<Craft>() : null;
+		return part != null && craft != null;
 	}
 
 	private static bool SupportsSymmetricCopy(Part part)
@@ -1425,9 +1484,9 @@ internal static class PartConnectionEditorUtility
 
 			EditorGUI.BeginChangeCheck();
 			bool isPartAEndpoint = EditorGUILayout.Toggle("Owns partA", endpoint.IsPartAEndpoint);
-			int localAttachPointId = EditorGUILayout.IntField("Local Attach Point", endpoint.LocalAttachPointId);
-			int connectedPartId = EditorGUILayout.IntField("Connected Part Id", endpoint.ConnectedPartId);
-			int connectedAttachPointId = EditorGUILayout.IntField("Connected Attach Point", endpoint.ConnectedAttachPointId);
+			int localAttachPointId = EditorGUILayout.DelayedIntField("Local Attach Point", endpoint.LocalAttachPointId);
+			int connectedPartId = EditorGUILayout.DelayedIntField("Connected Part Id", endpoint.ConnectedPartId);
+			int connectedAttachPointId = EditorGUILayout.DelayedIntField("Connected Attach Point", endpoint.ConnectedAttachPointId);
 			if (EditorGUI.EndChangeCheck())
 			{
 				RegisterUndo(part, craft, "Edit Part Connection");

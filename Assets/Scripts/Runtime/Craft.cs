@@ -420,7 +420,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 	}
 
 	// 通过 XML 往返复制一个零件，并为副本分配新 id 和轻微偏移。 / Clone a part by round-tripping through XML, then assign a new id and slight offset.
-	public Part ClonePart(Part source)
+	public Part ClonePart(Part source, bool rebuildPreview = true)
 	{
 		if (source == null)
 		{
@@ -432,12 +432,15 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		Vector3 clonePosition = XmlUtil.ParseVector3((string)cloneElement.Attribute("position"), source.transform.localPosition);
 		cloneElement.SetAttributeValue("position", XmlUtil.FormatVector3(clonePosition + new Vector3(0.5f, 0f, 0f)));
 		Part clone = CreatePartFromXml(cloneElement, AllocateOrderIndex());
-		RebuildAllPreviews();
+		if (rebuildPreview)
+		{
+			RebuildAllPreviews();
+		}
 		return clone;
 	}
 
 	// 按 Craft 本地 X=0 对称面创建一个镜像副本，并按零件类型重排局部状态。 / Create a mirrored duplicate across the craft-local X=0 symmetry plane.
-	public Part ClonePartMirrored(Part source)
+	public Part ClonePartMirrored(Part source, bool rebuildPreview = true)
 	{
 		if (source == null)
 		{
@@ -455,7 +458,10 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		clone.transform.localPosition = MirrorLocalPosition(source.transform.localPosition);
 		clone.transform.localRotation = MirrorLocalRotation(source.transform.localRotation);
 		ApplyMirroredCloneState(source, clone);
-		RebuildAllPreviews();
+		if (rebuildPreview)
+		{
+			RebuildAllPreviews();
+		}
 		return clone;
 	}
 
