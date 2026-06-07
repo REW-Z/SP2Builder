@@ -690,6 +690,41 @@ public class FuselagePart : Part
 		MarkStateXmlDirty();
 	}
 
+	// 把当前机身配置成 source 的 Front 或 Rear 外延段。 / Configure this fuselage as a front or rear extension of source.
+	public void ConfigureAsExtensionOf(FuselagePart source, bool fromFront, float ratio)
+	{
+		if (source == null)
+		{
+			return;
+		}
+
+		source.CanonicalizeSections();
+		float span = Mathf.Max(0.0001f, ratio);
+		float start = fromFront ? 1f : -span;
+		float end = fromFront ? 1f + span : 0f;
+		Vector3 sourceOffset = source._offset;
+		FuselageSectionSettings sourceRearSection = source._rearSection;
+		FuselageSectionSettings sourceFrontSection = source._frontSection;
+		Vector3 localStart = sourceOffset * (start - 0.5f);
+		Vector3 localEnd = sourceOffset * (end - 0.5f);
+		Vector3 localCenter = (localStart + localEnd) * 0.5f;
+
+		transform.localRotation = source.transform.localRotation;
+		transform.localScale = source.transform.localScale;
+		transform.localPosition = source.transform.localPosition
+			+ source.transform.localRotation * Vector3.Scale(localCenter, source.transform.localScale);
+
+		_serializationMode = source._serializationMode;
+		_visualStyle = source._visualStyle;
+		_noseconeRoundness = source._noseconeRoundness;
+		_glass = source._glass;
+		_offset = sourceOffset * span;
+		_rearSection = FuselageSectionSettings.LerpUnclamped(sourceRearSection, sourceFrontSection, start);
+		_frontSection = FuselageSectionSettings.LerpUnclamped(sourceRearSection, sourceFrontSection, end);
+		CanonicalizeSections();
+		MarkStateXmlDirty();
+	}
+
 	// 直接写入桥接段的 offset 和两端截面。 / Assign the offset and end sections for a bridge fuselage.
 	public void ConfigureBridgeShape(Vector3 offset, FuselageSectionSettings rearSection, FuselageSectionSettings frontSection)
 	{

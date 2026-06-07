@@ -305,6 +305,50 @@ public struct FuselageSectionSettings
 		result.SanitizeInterpolated(DefaultMinimumDimension);
 		return result;
 	}
+
+	// 按 Rear->Front 的参数继续向外推，用于把圆筒无缝延申到 0..1 范围之外。 / Extrapolate past Rear->Front t for seamless cylinder extension.
+	public static FuselageSectionSettings LerpUnclamped(FuselageSectionSettings a, FuselageSectionSettings b, float t)
+	{
+		Float4Value cornerStretchMask = LerpFloat4Unclamped(a.GetCornerStretchMask(), b.GetCornerStretchMask(), t);
+		FuselageSectionSettings result = new FuselageSectionSettings
+		{
+			Width = Mathf.LerpUnclamped(a.Width, b.Width, t),
+			Height = Mathf.LerpUnclamped(a.Height, b.Height, t),
+			Trapezium = Mathf.LerpUnclamped(a.Trapezium, b.Trapezium, t),
+			Thickness = Mathf.LerpUnclamped(a.Thickness, b.Thickness, t),
+			CornerRadii = LerpFloat4Unclamped(a.CornerRadii, b.CornerRadii, t),
+			CornerStretch = Bool4Value.FromFloatMask(cornerStretchMask),
+			CornerStretchAmount = cornerStretchMask,
+			EdgeCurvature = LerpFloat4Unclamped(a.EdgeCurvature, b.EdgeCurvature, t),
+			CutTop = Mathf.LerpUnclamped(a.CutTop, b.CutTop, t),
+			CutBottom = Mathf.LerpUnclamped(a.CutBottom, b.CutBottom, t),
+			CutLeft = Mathf.LerpUnclamped(a.CutLeft, b.CutLeft, t),
+			CutRight = Mathf.LerpUnclamped(a.CutRight, b.CutRight, t),
+			CutEnabled = Bool4Value.FromFloatMask(LerpFloat4Unclamped(a.CutEnabled.ToFloatMask(), b.CutEnabled.ToFloatMask(), t)),
+			Smooth = t < 0.5f ? a.Smooth : b.Smooth,
+			CornerSamples = new Int4Value(
+				(int)Mathf.LerpUnclamped(a.CornerSamples.X, b.CornerSamples.X, t),
+				(int)Mathf.LerpUnclamped(a.CornerSamples.Y, b.CornerSamples.Y, t),
+				(int)Mathf.LerpUnclamped(a.CornerSamples.Z, b.CornerSamples.Z, t),
+				(int)Mathf.LerpUnclamped(a.CornerSamples.W, b.CornerSamples.W, t)),
+			EdgeSamples = new Int4Value(
+				(int)Mathf.LerpUnclamped(a.EdgeSamples.X, b.EdgeSamples.X, t),
+				(int)Mathf.LerpUnclamped(a.EdgeSamples.Y, b.EdgeSamples.Y, t),
+				(int)Mathf.LerpUnclamped(a.EdgeSamples.Z, b.EdgeSamples.Z, t),
+				(int)Mathf.LerpUnclamped(a.EdgeSamples.W, b.EdgeSamples.W, t))
+		};
+		result.SanitizeInterpolated(DefaultMinimumDimension);
+		return result;
+	}
+
+	private static Float4Value LerpFloat4Unclamped(Float4Value a, Float4Value b, float t)
+	{
+		return new Float4Value(
+			Mathf.LerpUnclamped(a.X, b.X, t),
+			Mathf.LerpUnclamped(a.Y, b.Y, t),
+			Mathf.LerpUnclamped(a.Z, b.Z, t),
+			Mathf.LerpUnclamped(a.W, b.W, t));
+	}
 }
 
 internal static class FuselageGeometry
@@ -1982,10 +2026,16 @@ internal static class FuselageGeometry
 		ConnectRim(triangles, outerCap, innerCap, flip);
 	}
 
-	// 用一个共享 tip 顶点把最后一圈 ring 收口成 cone fan。 / Collapse the last ring into a cone fan using one shared tip vertex.
+	// 用独立 cap 顶点把最后一圈 ring 收口成 cone fan，避免 sharp ring 的 split 顶点在 tip 处留下开边。 / Collapse the last ring into a cone fan with cap vertices so split sharp-ring vertices do not leave open tip edges.
 	private static void ConnectRingToPoint(List<Vector3> vertices, List<Vector3> normals, List<int> triangles, RingProfile ring, Vector3 tipPosition, Vector3 expectedNormal)
 	{
 		if (ring == null || ring.Count < 3)
+		{
+			return;
+		}
+
+		List<Vector2> capPoints = BuildCapLoopPoints(ring.Points);
+		if (capPoints.Count < 3)
 		{
 			return;
 		}
@@ -1995,20 +2045,24 @@ internal static class FuselageGeometry
 		vertices.Add(tipPosition);
 		normals.Add(tipNormal);
 
-		for (int i = 0; i < ring.Count; i++)
+		int start = vertices.Count;
+		for (int i = 0; i < capPoints.Count; i++)
 		{
-			int next = (i + 1) % ring.Count;
-			int currentIndex = ring.GetOutIndex(i);
-			int nextIndex = ring.GetInIndex(next);
-			if (currentIndex < 0 || nextIndex < 0)
-			{
-				continue;
-			}
+			Vector2 point = capPoints[i];
+			int sourceIndex = FindClosestRingPoint(ring, point);
+			vertices.Add(ring.Center + new Vector3(point.x, point.y, 0f));
+			normals.Add(GetRingPointNormal(normals, ring, sourceIndex, tipNormal));
+		}
 
-			Vector3 current = GetRingVertex(ring, i);
-			Vector3 nextVertex = GetRingVertex(ring, next);
+		for (int i = 0; i < capPoints.Count; i++)
+		{
+			int next = (i + 1) % capPoints.Count;
+			int currentIndex = start + i;
+			int nextIndex = start + next;
+			Vector3 current = vertices[currentIndex];
+			Vector3 nextVertex = vertices[nextIndex];
 			Vector3 faceNormal = Vector3.Cross(nextVertex - current, tipPosition - current);
-			if (faceNormal.sqrMagnitude <= Epsilon)
+			if (faceNormal.sqrMagnitude <= TriangleAreaEpsilon * TriangleAreaEpsilon)
 			{
 				continue;
 			}
@@ -2026,6 +2080,41 @@ internal static class FuselageGeometry
 				triangles.Add(tipIndex);
 			}
 		}
+	}
+
+	private static int FindClosestRingPoint(RingProfile ring, Vector2 point)
+	{
+		int bestIndex = 0;
+		float bestDistance = float.PositiveInfinity;
+		for (int i = 0; i < ring.Count; i++)
+		{
+			float distance = (ring.Points[i] - point).sqrMagnitude;
+			if (distance < bestDistance)
+			{
+				bestDistance = distance;
+				bestIndex = i;
+			}
+		}
+
+		return bestIndex;
+	}
+
+	private static Vector3 GetRingPointNormal(List<Vector3> normals, RingProfile ring, int pointIndex, Vector3 fallback)
+	{
+		Vector3 normal = Vector3.zero;
+		int inIndex = ring.GetInIndex(pointIndex);
+		if (inIndex >= 0 && inIndex < normals.Count)
+		{
+			normal += normals[inIndex];
+		}
+
+		int outIndex = ring.GetOutIndex(pointIndex);
+		if (outIndex >= 0 && outIndex < normals.Count && outIndex != inIndex)
+		{
+			normal += normals[outIndex];
+		}
+
+		return normal.sqrMagnitude > Epsilon ? normal.normalized : fallback;
 	}
 
 	private static RingProfile DuplicateRing(List<Vector3> vertices, List<Vector3> normals, RingProfile source, Vector3 normal)

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -10,7 +11,7 @@ public class CraftEditor : UnityEditor.Editor
 	public override void OnInspectorGUI()
 	{
 		serializedObject.Update();
-		DrawPropertiesExcluding(serializedObject, "_rawAircraftXml", "_themeMaterials", "_renderWindowBayPreviewMeshes");
+		DrawPropertiesExcluding(serializedObject, "_rawAircraftXml", "_themeMaterials", "_renderWindowBayPreviewMeshes", "_craftInfo");
 		PartInspectorUtility.DrawRawXmlFoldout(serializedObject, "_rawAircraftXml", "Cached Aircraft XML");
 		if (serializedObject.ApplyModifiedProperties())
 		{
@@ -110,6 +111,8 @@ internal class CraftInfoWindow : EditorWindow
 
 	private bool _showCachedHierarchy = true;
 
+	private bool _showPinnedParts = true;
+
 	// 打开 Craft 信息窗口。 / Open the Craft information window.
 	public static void Open(Craft craft)
 	{
@@ -145,6 +148,7 @@ internal class CraftInfoWindow : EditorWindow
 		DrawAircraftInfo();
 		DrawTransformTree();
 		DrawCachedHierarchy();
+		DrawPinnedParts();
 		EditorGUILayout.EndScrollView();
 	}
 
@@ -189,12 +193,38 @@ internal class CraftInfoWindow : EditorWindow
 		_showCachedHierarchy = EditorGUILayout.BeginFoldoutHeaderGroup(_showCachedHierarchy, "Cached Tree Map");
 		if (_showCachedHierarchy)
 		{
-			SerializedObject serializedCraft = new SerializedObject(_craft);
-			SerializedProperty nodes = serializedCraft.FindProperty("_partHierarchyNodes");
-			SerializedProperty assignments = serializedCraft.FindProperty("_partHierarchyAssignments");
-			EditorGUILayout.LabelField("Cached Group Nodes", GetArraySize(nodes).ToString());
-			EditorGUILayout.LabelField("Cached Part Assignments", GetArraySize(assignments).ToString());
-			DrawCachedNodes(nodes, assignments);
+			CraftInfo info = _craft.Info;
+			EditorGUILayout.LabelField("Cached Group Nodes", info.HierarchyNodes.Count.ToString());
+			EditorGUILayout.LabelField("Cached Part Assignments", info.HierarchyAssignments.Count.ToString());
+			DrawCachedNodes(info.HierarchyNodes, info.HierarchyAssignments);
+		}
+		EditorGUILayout.EndFoldoutHeaderGroup();
+	}
+
+	// 绘制 CraftInfo 中被 Pin 的零件基准。 / Draw pinned part baselines stored in CraftInfo.
+	private void DrawPinnedParts()
+	{
+		EditorGUILayout.Space(8f);
+		_showPinnedParts = EditorGUILayout.BeginFoldoutHeaderGroup(_showPinnedParts, "Pinned Parts");
+		if (_showPinnedParts)
+		{
+			IReadOnlyList<CraftInfo.PinnedPartTransformRecord> pinnedParts = _craft.Info.PinnedPartTransforms;
+			EditorGUILayout.LabelField("Pinned Count", pinnedParts.Count.ToString());
+			foreach (CraftInfo.PinnedPartTransformRecord record in pinnedParts.Where(item => item != null).OrderBy(item => item.PartId))
+			{
+				Part part = _craft.FindPartById(record.PartId);
+				EditorGUILayout.BeginHorizontal();
+				EditorGUILayout.LabelField(
+					$"#{record.PartId} exists={(part != null ? "Yes" : "No")} pos={record.PositionText} rot={record.RotationText}");
+				using (new EditorGUI.DisabledScope(part == null))
+				{
+					if (GUILayout.Button("Select", GUILayout.Width(64f)))
+					{
+						Selection.activeObject = part.gameObject;
+					}
+				}
+				EditorGUILayout.EndHorizontal();
+			}
 		}
 		EditorGUILayout.EndFoldoutHeaderGroup();
 	}
@@ -226,9 +256,11 @@ internal class CraftInfoWindow : EditorWindow
 	}
 
 	// 绘制缓存的分类节点表，只显示每个节点下属 Part 数量。 / Draw the cached grouping-node table with Part counts only.
-	private static void DrawCachedNodes(SerializedProperty nodes, SerializedProperty assignments)
+	private static void DrawCachedNodes(
+		IReadOnlyList<CraftInfo.HierarchyNodeRecord> nodes,
+		IReadOnlyList<CraftInfo.PartHierarchyAssignment> assignments)
 	{
-		if (GetArraySize(nodes) == 0)
+		if (nodes == null || nodes.Count == 0)
 		{
 			return;
 		}
@@ -237,13 +269,18 @@ internal class CraftInfoWindow : EditorWindow
 		Dictionary<int, int> directPartCountByNodeId = BuildCachedDirectPartCounts(assignments);
 		EditorGUILayout.Space(4f);
 		EditorGUILayout.LabelField("Group Nodes", EditorStyles.boldLabel);
-		for (int i = 0; i < nodes.arraySize; i++)
+		for (int i = 0; i < nodes.Count; i++)
 		{
-			SerializedProperty node = nodes.GetArrayElementAtIndex(i);
-			int nodeId = ReadInt(node, "NodeId");
-			int parentNodeId = ReadInt(node, "ParentNodeId");
-			int siblingIndex = ReadInt(node, "SiblingIndex");
-			string name = ReadString(node, "Name");
+			CraftInfo.HierarchyNodeRecord node = nodes[i];
+			if (node == null)
+			{
+				continue;
+			}
+
+			int nodeId = node.NodeId;
+			int parentNodeId = node.ParentNodeId;
+			int siblingIndex = node.SiblingIndex;
+			string name = node.Name ?? string.Empty;
 			int directParts = directPartCountByNodeId.TryGetValue(nodeId, out int directCount) ? directCount : 0;
 			int totalParts = CountCachedDescendantParts(nodeId, parentByNodeId, directPartCountByNodeId);
 			EditorGUILayout.LabelField($"#{nodeId} parent={parentNodeId} sibling={siblingIndex} parts={directParts}/{totalParts} name={name}");
@@ -301,7 +338,7 @@ internal class CraftInfoWindow : EditorWindow
 		return count;
 	}
 
-	private static Dictionary<int, int> BuildCachedParentMap(SerializedProperty nodes)
+	private static Dictionary<int, int> BuildCachedParentMap(IReadOnlyList<CraftInfo.HierarchyNodeRecord> nodes)
 	{
 		Dictionary<int, int> result = new Dictionary<int, int>();
 		if (nodes == null)
@@ -309,19 +346,19 @@ internal class CraftInfoWindow : EditorWindow
 			return result;
 		}
 
-		for (int i = 0; i < nodes.arraySize; i++)
+		for (int i = 0; i < nodes.Count; i++)
 		{
-			SerializedProperty node = nodes.GetArrayElementAtIndex(i);
-			int nodeId = ReadInt(node, "NodeId");
+			CraftInfo.HierarchyNodeRecord node = nodes[i];
+			int nodeId = node?.NodeId ?? 0;
 			if (nodeId > 0)
 			{
-				result[nodeId] = ReadInt(node, "ParentNodeId");
+				result[nodeId] = node.ParentNodeId;
 			}
 		}
 		return result;
 	}
 
-	private static Dictionary<int, int> BuildCachedDirectPartCounts(SerializedProperty assignments)
+	private static Dictionary<int, int> BuildCachedDirectPartCounts(IReadOnlyList<CraftInfo.PartHierarchyAssignment> assignments)
 	{
 		Dictionary<int, int> result = new Dictionary<int, int>();
 		if (assignments == null)
@@ -329,9 +366,9 @@ internal class CraftInfoWindow : EditorWindow
 			return result;
 		}
 
-		for (int i = 0; i < assignments.arraySize; i++)
+		for (int i = 0; i < assignments.Count; i++)
 		{
-			int parentNodeId = ReadInt(assignments.GetArrayElementAtIndex(i), "ParentNodeId");
+			int parentNodeId = assignments[i]?.ParentNodeId ?? 0;
 			if (parentNodeId <= 0)
 			{
 				continue;
@@ -406,20 +443,4 @@ internal class CraftInfoWindow : EditorWindow
 		return count;
 	}
 
-	private static int GetArraySize(SerializedProperty property)
-	{
-		return property != null && property.isArray ? property.arraySize : 0;
-	}
-
-	private static int ReadInt(SerializedProperty owner, string propertyName)
-	{
-		SerializedProperty property = owner?.FindPropertyRelative(propertyName);
-		return property != null ? property.intValue : 0;
-	}
-
-	private static string ReadString(SerializedProperty owner, string propertyName)
-	{
-		SerializedProperty property = owner?.FindPropertyRelative(propertyName);
-		return property != null ? property.stringValue : string.Empty;
-	}
 }

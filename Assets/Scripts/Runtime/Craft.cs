@@ -29,50 +29,6 @@ public struct CraftThemeMaterial
 [ExecuteAlways]
 public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 {
-	private const int CraftRootHierarchyNodeId = 0;
-
-	[Serializable]
-	private sealed class CraftHierarchyNodeRecord
-	{
-		public int NodeId;
-
-		public int ParentNodeId;
-
-		public int SiblingIndex;
-
-		public string Name;
-
-		public CraftHierarchyNodeRecord()
-		{
-		}
-
-		public CraftHierarchyNodeRecord(int nodeId, int parentNodeId, int siblingIndex, string name)
-		{
-			NodeId = nodeId;
-			ParentNodeId = parentNodeId;
-			SiblingIndex = siblingIndex;
-			Name = name ?? string.Empty;
-		}
-	}
-
-	[Serializable]
-	private sealed class CraftPartHierarchyAssignment
-	{
-		public int PartId;
-
-		public int ParentNodeId;
-
-		public CraftPartHierarchyAssignment()
-		{
-		}
-
-		public CraftPartHierarchyAssignment(int partId, int parentNodeId)
-		{
-			PartId = partId;
-			ParentNodeId = parentNodeId;
-		}
-	}
-
 	[SerializeField]
 	private string _sourceXmlPath;
 
@@ -92,10 +48,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 	private bool _renderWindowBayPreviewMeshes = true;
 
 	[SerializeField, HideInInspector]
-	private CraftHierarchyNodeRecord[] _partHierarchyNodes = Array.Empty<CraftHierarchyNodeRecord>();
-
-	[SerializeField, HideInInspector]
-	private CraftPartHierarchyAssignment[] _partHierarchyAssignments = Array.Empty<CraftPartHierarchyAssignment>();
+	private CraftInfo _craftInfo = new CraftInfo();
 
 	private bool _isRebuildingPreviews;
 
@@ -104,12 +57,6 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 	private bool _suppressPreviewQueue;
 
 	private readonly Dictionary<int, Part> _partById = new Dictionary<int, Part>();
-
-	private readonly Dictionary<int, CraftHierarchyNodeRecord> _partHierarchyNodeById = new Dictionary<int, CraftHierarchyNodeRecord>();
-
-	private readonly Dictionary<int, int> _partHierarchyNodeIdByPartId = new Dictionary<int, int>();
-
-	private readonly Dictionary<int, Transform> _restoredPartHierarchyNodeById = new Dictionary<int, Transform>();
 
 	private bool _partIndexDirty = true;
 
@@ -185,6 +132,8 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 	public bool HasConnectionData => _hasConnectionData;
 
 	public bool RenderWindowBayPreviewMeshes => _renderWindowBayPreviewMeshes;
+
+	public CraftInfo Info => EnsureCraftInfo();
 
 	public int PaintMaterialCount
 	{
@@ -264,7 +213,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		_suppressPreviewQueueAfterDeserialize = true;
 		_clearDeserializeSuppressionQueued = false;
 		_sceneLoadPreviewMaterialRestoreQueued = false;
-		RebuildPartHierarchyLookup();
+		EnsureCraftInfo().RebuildHierarchyLookup();
 	}
 
 	// 导入飞机 XML，并在当前 Craft 下生成对应的子零件对象。 / Import an aircraft XML file and instantiate child part GameObjects under this craft.
@@ -284,7 +233,10 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		name = (string)aircraftElement.Attribute("name") ?? "Craft";
 		_themeMaterials = ParseThemeMaterials(aircraftElement.Element("Theme"));
 		PreviewMaterialFactory.ClearThemedMaterialCache();
+		XElement partsElement = aircraftElement.Element("Assembly")?.Element("Parts");
+		HashSet<int> importedPartIds = CollectImportedPartIds(partsElement);
 		CapturePartHierarchySnapshot();
+		LogRemovedPinnedParts(Info.RemoveMissingPinnedParts(importedPartIds));
 
 		_suppressPreviewQueue = true;
 		try
@@ -292,7 +244,6 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 			ClearChildren();
 			CreateRestoredPartHierarchyNodes();
 
-			XElement partsElement = aircraftElement.Element("Assembly")?.Element("Parts");
 			if (partsElement == null)
 			{
 				return;
@@ -331,7 +282,10 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 		foreach (Part part in GetExportParts())
 		{
-			partsElement.Add(part.ExportPartElement());
+			Info.ApplyPinnedTransform(part, warnIfChanged: true, "export");
+			XElement partElement = part.ExportPartElement();
+			Info.ApplyPinnedTransformToXml(part, partElement);
+			partsElement.Add(partElement);
 		}
 
 		WriteConnections(assemblyElement);
@@ -385,7 +339,12 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		part.InitializeFromXml(partElement, orderIndex);
 		_partById[part.PartId] = part;
 		_partIndexDirty = true;
-		ApplyScenePickingLock(partObject, lockScenePicking);
+		bool isPinned = Info.IsPinned(part.PartId);
+		if (isPinned)
+		{
+			Info.ApplyPinnedTransform(part, warnIfChanged: true, "import");
+		}
+		ApplyScenePickingLock(partObject, lockScenePicking || isPinned);
 		if (partElement.Element("Label.State") != null)
 		{
 			LabelState label = partObject.AddComponent<LabelState>();
@@ -393,6 +352,47 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		}
 
 		return part;
+	}
+
+	// 将零件加入 Pin 追踪，并立即锁定场景拾取。 / Add one part to pin tracking and immediately lock scene picking.
+	public void PinPart(Part part)
+	{
+		if (part == null)
+		{
+			return;
+		}
+
+		Info.PinPart(part);
+		ApplyScenePickingLock(part.gameObject, true);
+	}
+
+	// 取消零件 Pin；如果 Craft 仍启用导入锁，则保持拾取锁定。 / Remove one part pin while preserving the craft-wide import picking lock.
+	public void UnpinPart(Part part)
+	{
+		if (part == null)
+		{
+			return;
+		}
+
+		Info.UnpinPart(part.PartId);
+		ApplyScenePickingLock(part.gameObject, _lockImportedPartsInScene);
+	}
+
+	public bool IsPartPinned(Part part)
+	{
+		return part != null && Info.IsPinned(part.PartId);
+	}
+
+	// 对 pinned 零件执行一次低成本校准。 / Run one low-cost correction pass for a pinned part.
+	public bool EnforcePinnedPartTransform(Part part, bool warnIfChanged, string context)
+	{
+		return Info.ApplyPinnedTransform(part, warnIfChanged, context);
+	}
+
+	private CraftInfo EnsureCraftInfo()
+	{
+		_craftInfo ??= new CraftInfo();
+		return _craftInfo;
 	}
 
 	// 在 Inspector 改动 Craft 级数据后清理材质缓存并整体重建预览。 / Clear material caches and rebuild all previews after craft-level inspector edits.
@@ -1282,151 +1282,19 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 	// 记录当前 Craft 下的纯分类 Transform 层级，供下一次 XML 导入后还原。 / Capture pure grouping transforms under this Craft so the next XML import can restore them.
 	private void CapturePartHierarchySnapshot()
 	{
-		List<Part> parts = GetExportParts().ToList();
-		if (parts.Count == 0)
-		{
-			RebuildPartHierarchyLookup();
-			return;
-		}
-
-		List<CraftHierarchyNodeRecord> nodes = new List<CraftHierarchyNodeRecord>();
-		List<CraftPartHierarchyAssignment> assignments = new List<CraftPartHierarchyAssignment>();
-		foreach (Transform child in transform.Cast<Transform>().OrderBy(item => item.GetSiblingIndex()))
-		{
-			CapturePartHierarchyNode(child, CraftRootHierarchyNodeId, nodes, assignments);
-		}
-
-		_partHierarchyNodes = nodes.ToArray();
-		_partHierarchyAssignments = assignments.ToArray();
-		RebuildPartHierarchyLookup();
-	}
-
-	// 递归记录一个非 Part 节点；遇到 Part 时只写入 PartId 到父分类节点的映射。 / Recursively record one non-Part node; when a Part is reached, only map its PartId to the parent group.
-	private void CapturePartHierarchyNode(Transform current, int parentNodeId, List<CraftHierarchyNodeRecord> nodes, List<CraftPartHierarchyAssignment> assignments)
-	{
-		if (current == null)
-		{
-			return;
-		}
-
-		Part part = current.GetComponent<Part>();
-		if (part != null)
-		{
-			if (parentNodeId != CraftRootHierarchyNodeId && part.PartId > 0)
-			{
-				assignments.Add(new CraftPartHierarchyAssignment(part.PartId, parentNodeId));
-			}
-			return;
-		}
-
-		int nodeId = nodes.Count + 1;
-		nodes.Add(new CraftHierarchyNodeRecord(nodeId, parentNodeId, current.GetSiblingIndex(), current.name));
-		foreach (Transform child in current.Cast<Transform>().OrderBy(item => item.GetSiblingIndex()))
-		{
-			CapturePartHierarchyNode(child, nodeId, nodes, assignments);
-		}
-	}
-
-	// 把序列化的层级表重建成导入时 O(1) 查询的字典。 / Rebuild the serialized hierarchy tables into O(1) lookup dictionaries for import.
-	private void RebuildPartHierarchyLookup()
-	{
-		_partHierarchyNodeById.Clear();
-		_partHierarchyNodeIdByPartId.Clear();
-		foreach (CraftHierarchyNodeRecord node in _partHierarchyNodes ?? Array.Empty<CraftHierarchyNodeRecord>())
-		{
-			if (node == null || node.NodeId <= CraftRootHierarchyNodeId || _partHierarchyNodeById.ContainsKey(node.NodeId))
-			{
-				continue;
-			}
-
-			_partHierarchyNodeById.Add(node.NodeId, node);
-		}
-
-		foreach (CraftPartHierarchyAssignment assignment in _partHierarchyAssignments ?? Array.Empty<CraftPartHierarchyAssignment>())
-		{
-			if (assignment == null || assignment.PartId <= 0 || !_partHierarchyNodeById.ContainsKey(assignment.ParentNodeId))
-			{
-				continue;
-			}
-
-			_partHierarchyNodeIdByPartId[assignment.PartId] = assignment.ParentNodeId;
-		}
+		Info.CaptureHierarchySnapshot(transform, GetExportParts().ToList());
 	}
 
 	// 根据当前缓存先恢复所有分类节点，之后创建 Part 时即可直接挂到目标父节点。 / Restore all cached grouping nodes before Parts are recreated under their target parents.
 	private void CreateRestoredPartHierarchyNodes()
 	{
-		_restoredPartHierarchyNodeById.Clear();
-		EnsurePartHierarchyLookup();
-		foreach (CraftHierarchyNodeRecord node in _partHierarchyNodes ?? Array.Empty<CraftHierarchyNodeRecord>())
-		{
-			if (node == null)
-			{
-				continue;
-			}
-
-			ResolvePartHierarchyNode(node.NodeId);
-		}
+		Info.CreateRestoredHierarchyNodes(transform);
 	}
 
 	// 按 PartId 查找导入时应使用的父节点；没有缓存记录则仍直接挂到 Craft。 / Resolve the parent transform for an imported PartId; uncached parts still go directly under the Craft.
 	private Transform ResolveImportedPartParent(int partId)
 	{
-		EnsurePartHierarchyLookup();
-		if (partId > 0 && _partHierarchyNodeIdByPartId.TryGetValue(partId, out int parentNodeId))
-		{
-			return ResolvePartHierarchyNode(parentNodeId);
-		}
-
-		return transform;
-	}
-
-	// 懒创建一个分类节点及其父节点，保证嵌套分类路径可以按需恢复。 / Lazily create one grouping node and its parent so nested category paths can be restored on demand.
-	private Transform ResolvePartHierarchyNode(int nodeId)
-	{
-		if (nodeId <= CraftRootHierarchyNodeId)
-		{
-			return transform;
-		}
-
-		if (_restoredPartHierarchyNodeById.TryGetValue(nodeId, out Transform restored) && restored != null)
-		{
-			return restored;
-		}
-
-		EnsurePartHierarchyLookup();
-		if (!_partHierarchyNodeById.TryGetValue(nodeId, out CraftHierarchyNodeRecord record) || record == null)
-		{
-			return transform;
-		}
-
-		Transform parent = record.ParentNodeId > CraftRootHierarchyNodeId && record.ParentNodeId != record.NodeId
-			? ResolvePartHierarchyNode(record.ParentNodeId)
-			: transform;
-		GameObject groupObject = new GameObject(string.IsNullOrWhiteSpace(record.Name) ? "Group" : record.Name);
-		Transform groupTransform = groupObject.transform;
-		groupTransform.SetParent(parent, false);
-		groupTransform.localPosition = Vector3.zero;
-		groupTransform.localRotation = Quaternion.identity;
-		groupTransform.localScale = Vector3.one;
-		if (record.SiblingIndex >= 0)
-		{
-			groupTransform.SetSiblingIndex(Mathf.Min(record.SiblingIndex, Mathf.Max(0, parent.childCount - 1)));
-		}
-
-		_restoredPartHierarchyNodeById[nodeId] = groupTransform;
-		return groupTransform;
-	}
-
-	// 确保延迟恢复前已经从序列化数组重建查询字典。 / Ensure lookup dictionaries are rebuilt from serialized arrays before lazy restoration.
-	private void EnsurePartHierarchyLookup()
-	{
-		if (_partHierarchyNodeById.Count > 0 || ((_partHierarchyNodes?.Length ?? 0) == 0 && (_partHierarchyAssignments?.Length ?? 0) == 0))
-		{
-			return;
-		}
-
-		RebuildPartHierarchyLookup();
+		return Info.ResolveImportedPartParent(transform, partId) ?? transform;
 	}
 
 	// 导入新飞机前先清空旧的预览子对象。 / Remove all existing preview children before importing a new aircraft.
@@ -1434,11 +1302,43 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 	{
 		_partById.Clear();
 		_partIndexDirty = true;
-		_restoredPartHierarchyNodeById.Clear();
+		Info.ClearRestoredHierarchyNodes();
 		foreach (Transform child in transform.Cast<Transform>().ToArray())
 		{
 			DestroyImmediate(child.gameObject);
 		}
+	}
+
+	// 读取即将导入的 XML 中仍存在的 PartId。 / Read the PartIds still present in the XML being imported.
+	private static HashSet<int> CollectImportedPartIds(XElement partsElement)
+	{
+		HashSet<int> partIds = new HashSet<int>();
+		if (partsElement == null)
+		{
+			return partIds;
+		}
+
+		foreach (XElement partElement in partsElement.Elements("Part"))
+		{
+			int partId = XmlUtil.ParseInt((string)partElement.Attribute("id"), int.MinValue);
+			if (partId > 0)
+			{
+				partIds.Add(partId);
+			}
+		}
+
+		return partIds;
+	}
+
+	// 缺失的 pinned Part 视为在外部游戏中被删除，导入时取消追踪并告警。 / Warn when pinned parts disappeared from the imported XML and are no longer tracked.
+	private void LogRemovedPinnedParts(IReadOnlyList<int> removedPartIds)
+	{
+		if (removedPartIds == null || removedPartIds.Count == 0)
+		{
+			return;
+		}
+
+		Debug.LogWarning($"CraftInfo stopped tracking missing pinned part ids: {string.Join(",", removedPartIds)}", this);
 	}
 
 	// 从 Assembly/Connections XML 中重建零件间的双向连接关系。 / Rebuild reciprocal part connections from the Assembly/Connections XML.

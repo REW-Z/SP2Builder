@@ -34,6 +34,8 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 	private const float MinimumSliceRatio = 0.001f;
 
+	private const float MinimumExtensionRatio = 0.0001f;
+
 	private const float BridgeMinimumDistance = 0.0001f;
 
 	private const float BridgeNormalWarningDot = 0.98f;
@@ -47,6 +49,10 @@ public class FuselagePartEditor : UnityEditor.Editor
 	private const string SnapSelectedFrontMenuPath = "Tools/SP2 Craft Editor/Fuselage/Snap Selected Front #e";
 
 	private const string SliceSelectedByRatioMenuPath = "Tools/SP2 Craft Editor/Fuselage/Slice Selected By Ratio...";
+
+	private const string ExtendSelectedFromRearMenuPath = "Tools/SP2 Craft Editor/Fuselage/Extend Selected From Rear...";
+
+	private const string ExtendSelectedFromFrontMenuPath = "Tools/SP2 Craft Editor/Fuselage/Extend Selected From Front...";
 
 	private const string BridgeSelectedFramesMenuPath = "Tools/SP2 Craft Editor/Fuselage/Bridge Selected Frames #b";
 
@@ -284,6 +290,32 @@ public class FuselagePartEditor : UnityEditor.Editor
 		return TryGetSingleSelectedFuselage(out _);
 	}
 
+	[MenuItem(ExtendSelectedFromRearMenuPath)]
+	// 打开从 Rear 端延申的 Wizard。 / Open the wizard that extends from the rear end.
+	private static void OpenExtendSelectedFromRearWizard()
+	{
+		ExtendFuselageWizard.Open(fromFront: false);
+	}
+
+	[MenuItem(ExtendSelectedFromRearMenuPath, true)]
+	private static bool ValidateOpenExtendSelectedFromRearWizard()
+	{
+		return TryGetSingleSelectedFuselage(out _);
+	}
+
+	[MenuItem(ExtendSelectedFromFrontMenuPath)]
+	// 打开从 Front 端延申的 Wizard。 / Open the wizard that extends from the front end.
+	private static void OpenExtendSelectedFromFrontWizard()
+	{
+		ExtendFuselageWizard.Open(fromFront: true);
+	}
+
+	[MenuItem(ExtendSelectedFromFrontMenuPath, true)]
+	private static bool ValidateOpenExtendSelectedFromFrontWizard()
+	{
+		return TryGetSingleSelectedFuselage(out _);
+	}
+
 	[MenuItem(BridgeSelectedFramesMenuPath)]
 	// 在两个选中的框架机身之间创建一段桥接机身。 / Create one bridge fuselage between the selected frame fuselages.
 	private static void BridgeSelectedFrames()
@@ -407,7 +439,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 		return craft != null && craft == second.GetComponentInParent<Craft>() && first != second;
 	}
 
-	// 按比例把当前选中的机身切成前后两段。 / Slice the selected fuselage into rear and front spans by ratio.
+	// 按比例从当前选中的机身生成前后两段，原机身保持不变。 / Create rear and front slice spans from the selected fuselage while keeping the source unchanged.
 	private static void SliceSelectedFuselageByRatio(float cutRatio)
 	{
 		if (!TryGetSingleSelectedFuselage(out FuselagePart source))
@@ -428,20 +460,66 @@ public class FuselagePartEditor : UnityEditor.Editor
 		}
 
 		float ratio = ClampSliceRatio(cutRatio);
-		FuselagePart frontSegment = CreateFuselageClone(craft, source, "Slice Fuselage");
-		if (frontSegment == null)
+		FuselagePart rearSegment = CreateFuselageClone(craft, source, "Slice Fuselage");
+		if (rearSegment == null)
 		{
 			return;
 		}
 
+		FuselagePart frontSegment = CreateFuselageClone(craft, source, "Slice Fuselage");
+		if (frontSegment == null)
+		{
+			Undo.DestroyObjectImmediate(rearSegment.gameObject);
+			return;
+		}
+
+		rearSegment.transform.SetParent(source.transform.parent, worldPositionStays: false);
 		frontSegment.transform.SetParent(source.transform.parent, worldPositionStays: false);
-		Undo.RecordObjects(new Object[] { craft, source, source.transform, frontSegment, frontSegment.transform }, "Slice Fuselage");
+		Undo.RecordObjects(new Object[] { craft, rearSegment, rearSegment.transform, frontSegment, frontSegment.transform }, "Slice Fuselage");
 
+		rearSegment.ConfigureAsSpanOf(source, 0f, ratio);
 		frontSegment.ConfigureAsSpanOf(source, ratio, 1f);
-		source.ConfigureAsSpanOf(source, 0f, ratio);
 
-		FinishFuselageTool(craft, source, source, frontSegment);
-		Selection.objects = new Object[] { source.gameObject, frontSegment.gameObject };
+		FinishFuselageTool(craft, rearSegment, rearSegment, frontSegment);
+		Selection.objects = new Object[] { source.gameObject, rearSegment.gameObject, frontSegment.gameObject };
+	}
+
+	// 从当前选中的机身一端按比例延申出一段新机身。 / Extend the selected fuselage from one end by creating one new proportional segment.
+	private static void ExtendSelectedFuselage(float extensionRatio, bool fromFront)
+	{
+		if (!TryGetSingleSelectedFuselage(out FuselagePart source))
+		{
+			return;
+		}
+
+		Craft craft = source.GetComponentInParent<Craft>();
+		if (craft == null)
+		{
+			return;
+		}
+
+		if (!source.SupportsLinearCylinderTools())
+		{
+			Debug.LogWarning("Fuselage extension only supports non-cone fuselage cylinders.", source);
+			return;
+		}
+
+		float ratio = ClampExtensionRatio(extensionRatio);
+		FuselagePart extension = CreateFuselageClone(craft, source, fromFront ? "Extend Fuselage From Front" : "Extend Fuselage From Rear");
+		if (extension == null)
+		{
+			return;
+		}
+
+		extension.transform.SetParent(source.transform.parent, worldPositionStays: false);
+		Undo.RecordObjects(new Object[] { craft, source, source.transform, extension, extension.transform }, fromFront ? "Extend Fuselage From Front" : "Extend Fuselage From Rear");
+
+		extension.ConfigureAsExtensionOf(source, fromFront, ratio);
+
+		FinishFuselageTool(craft, extension, source, extension);
+		Selection.objects = fromFront
+			? new Object[] { source.gameObject, extension.gameObject }
+			: new Object[] { extension.gameObject, source.gameObject };
 	}
 
 	// 创建一个基于模板 XML 的新机身并分配唯一 PartId。 / Create a new fuselage from template XML with a unique PartId.
@@ -633,6 +711,11 @@ public class FuselagePartEditor : UnityEditor.Editor
 		return Mathf.Clamp(ratio, MinimumSliceRatio, 1f - MinimumSliceRatio);
 	}
 
+	private static float ClampExtensionRatio(float ratio)
+	{
+		return float.IsFinite(ratio) ? Mathf.Max(MinimumExtensionRatio, ratio) : 1f;
+	}
+
 	private sealed class SliceRatioWizard : ScriptableWizard
 	{
 		public float CutRatio = 0.5f;
@@ -645,7 +728,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 		private void OnWizardUpdate()
 		{
 			CutRatio = ClampSliceRatio(CutRatio);
-			helpString = "CutRatio is measured from Rear to Front. 0.3 creates a 30% rear segment and a 70% front segment.";
+			helpString = "CutRatio is measured from Rear to Front. 0.3 creates new 30% rear and 70% front segments while keeping the source fuselage.";
 			errorString = TryGetSingleSelectedFuselage(out _) ? string.Empty : "Select exactly one FuselagePart.";
 			isValid = string.IsNullOrEmpty(errorString);
 		}
@@ -653,6 +736,36 @@ public class FuselagePartEditor : UnityEditor.Editor
 		private void OnWizardCreate()
 		{
 			SliceSelectedFuselageByRatio(CutRatio);
+		}
+	}
+
+	private sealed class ExtendFuselageWizard : ScriptableWizard
+	{
+		private static bool OpenFromFront;
+
+		public float Ratio = 1f;
+
+		public static void Open(bool fromFront)
+		{
+			OpenFromFront = fromFront;
+			DisplayWizard<ExtendFuselageWizard>(
+				fromFront ? "Extend Fuselage From Front" : "Extend Fuselage From Rear",
+				"Extend");
+		}
+
+		private void OnWizardUpdate()
+		{
+			Ratio = ClampExtensionRatio(Ratio);
+			helpString = OpenFromFront
+				? "Ratio extends a new segment past Front. 1 creates another segment with the same Run/Rise/Length and section deltas."
+				: "Ratio extends a new segment before Rear. 1 creates another segment with the same Run/Rise/Length and section deltas.";
+			errorString = TryGetSingleSelectedFuselage(out _) ? string.Empty : "Select exactly one FuselagePart.";
+			isValid = string.IsNullOrEmpty(errorString);
+		}
+
+		private void OnWizardCreate()
+		{
+			ExtendSelectedFuselage(Ratio, OpenFromFront);
 		}
 	}
 
@@ -1185,6 +1298,10 @@ internal static class PartInspectorUtility
 
 	private const string SymmetricCopySelectedMenuPath = "Tools/SP2 Craft Editor/Part/Symmetric Copy Selected #s";
 
+	private const string PinSelectedMenuPath = "Tools/SP2 Craft Editor/Part/Pin Selected";
+
+	private const string UnpinSelectedMenuPath = "Tools/SP2 Craft Editor/Part/Unpin Selected";
+
 	public static void DrawPartIdentity(Part part)
 	{
 		if (part == null)
@@ -1199,6 +1316,40 @@ internal static class PartInspectorUtility
 			EditorGUILayout.IntField("Part Id", part.PartId);
 			EditorGUILayout.TextField("Part Type", part.PartType);
 		}
+
+		DrawPinToggle(part);
+	}
+
+	private static void DrawPinToggle(Part part)
+	{
+		Craft craft = part.GetComponentInParent<Craft>();
+		if (craft == null)
+		{
+			return;
+		}
+
+		bool pinned = craft.IsPartPinned(part);
+		EditorGUI.BeginChangeCheck();
+		bool nextPinned = EditorGUILayout.Toggle("Pinned", pinned);
+		if (!EditorGUI.EndChangeCheck() || nextPinned == pinned)
+		{
+			return;
+		}
+
+		RegisterPartUndo(part, craft, nextPinned ? "Pin Part" : "Unpin Part");
+		if (nextPinned)
+		{
+			craft.PinPart(part);
+		}
+		else
+		{
+			craft.UnpinPart(part);
+		}
+
+		EditorUtility.SetDirty(craft);
+		EditorUtility.SetDirty(part);
+		EditorApplication.RepaintHierarchyWindow();
+		SceneView.RepaintAll();
 	}
 
 	public static void DrawMaterialEditor(Part part)
@@ -1279,6 +1430,40 @@ internal static class PartInspectorUtility
 		return TryGetSelectedParts(out _, requireSymmetricSupport: true);
 	}
 
+	[MenuItem(PinSelectedMenuPath)]
+	private static void PinSelectedParts()
+	{
+		if (!TryGetSelectedPartsIncludingChildren(out Part[] parts))
+		{
+			return;
+		}
+
+		SetPartsPinned(parts, pinned: true);
+	}
+
+	[MenuItem(PinSelectedMenuPath, true)]
+	private static bool ValidatePinSelectedParts()
+	{
+		return TryGetSelectedPartsIncludingChildren(out _);
+	}
+
+	[MenuItem(UnpinSelectedMenuPath)]
+	private static void UnpinSelectedParts()
+	{
+		if (!TryGetSelectedPartsIncludingChildren(out Part[] parts))
+		{
+			return;
+		}
+
+		SetPartsPinned(parts, pinned: false);
+	}
+
+	[MenuItem(UnpinSelectedMenuPath, true)]
+	private static bool ValidateUnpinSelectedParts()
+	{
+		return TryGetSelectedPartsIncludingChildren(out _);
+	}
+
 	public static void DrawCarverRefreshButton(Part part)
 	{
 		if (!(part is WindowPart) && !(part is BayPart))
@@ -1340,6 +1525,51 @@ internal static class PartInspectorUtility
 
 		EditorUtility.SetDirty(part);
 		EditorApplication.QueuePlayerLoopUpdate();
+		SceneView.RepaintAll();
+	}
+
+	private static void SetPartsPinned(IReadOnlyList<Part> parts, bool pinned)
+	{
+		if (parts == null || parts.Count == 0)
+		{
+			return;
+		}
+
+		string actionName = pinned ? "Pin Parts" : "Unpin Parts";
+		int undoGroup = Undo.GetCurrentGroup();
+		Undo.SetCurrentGroupName(actionName);
+		HashSet<Craft> changedCrafts = new HashSet<Craft>();
+		for (int i = 0; i < parts.Count; i++)
+		{
+			Part part = parts[i];
+			Craft craft = part != null ? part.GetComponentInParent<Craft>() : null;
+			if (craft == null)
+			{
+				continue;
+			}
+
+			RegisterPartUndo(part, craft, actionName);
+			if (pinned)
+			{
+				craft.PinPart(part);
+			}
+			else
+			{
+				craft.UnpinPart(part);
+			}
+
+			EditorUtility.SetDirty(part);
+			EditorUtility.SetDirty(craft);
+			changedCrafts.Add(craft);
+		}
+
+		foreach (Craft craft in changedCrafts)
+		{
+			EditorUtility.SetDirty(craft.gameObject);
+		}
+
+		Undo.CollapseUndoOperations(undoGroup);
+		EditorApplication.RepaintHierarchyWindow();
 		SceneView.RepaintAll();
 	}
 
@@ -1409,6 +1639,17 @@ internal static class PartInspectorUtility
 			.Where(part => part != null
 				&& part.GetComponentInParent<Craft>() != null
 				&& (!requireSymmetricSupport || SupportsSymmetricCopy(part)))
+			.Distinct()
+			.ToArray();
+		return parts.Length > 0;
+	}
+
+	private static bool TryGetSelectedPartsIncludingChildren(out Part[] parts)
+	{
+		parts = Selection.GetTransforms(SelectionMode.Editable | SelectionMode.ExcludePrefab | SelectionMode.TopLevel)
+			.Where(transform => transform != null)
+			.SelectMany(transform => transform.GetComponentsInChildren<Part>(includeInactive: true))
+			.Where(part => part != null && part.GetComponentInParent<Craft>() != null)
 			.Distinct()
 			.ToArray();
 		return parts.Length > 0;
