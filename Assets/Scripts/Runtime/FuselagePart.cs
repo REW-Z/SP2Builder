@@ -735,6 +735,32 @@ public class FuselagePart : Part
 		MarkStateXmlDirty();
 	}
 
+	// 判断当前圆筒是否能把等比 Transform scale 烘进自身截面数据。 / Check whether the current cylinder can bake its uniform Transform scale into fuselage shape data.
+	public bool CanResetUniformScaleToShape(float epsilon = 0.0001f)
+	{
+		return SupportsLinearCylinderTools()
+			&& TryGetPositiveUniformScale(transform.localScale, epsilon, out float scale)
+			&& Mathf.Abs(scale - 1f) > epsilon;
+	}
+
+	// 把等比 Transform scale 烘进 width/height/offset，再把 Transform scale 重置为 1。 / Bake uniform Transform scale into width/height/offset and reset Transform scale to 1.
+	public bool TryResetUniformScaleToShape(float epsilon = 0.0001f)
+	{
+		if (!CanResetUniformScaleToShape(epsilon) || !TryGetPositiveUniformScale(transform.localScale, epsilon, out float scale))
+		{
+			return false;
+		}
+
+		CanonicalizeSections();
+		_offset *= scale;
+		_rearSection = ScaleSectionShape(_rearSection, scale);
+		_frontSection = ScaleSectionShape(_frontSection, scale);
+		transform.localScale = Vector3.one;
+		CanonicalizeSections();
+		MarkStateXmlDirty();
+		return true;
+	}
+
 	// 返回前后端和四个中段侧面的 attach point 局部坐标。 / Return the local attach-point positions for both ends and the four mid-section sides.
 	public override Vector3 GetAttachPointLocalPosition(int attachPointId)
 	{
@@ -748,6 +774,37 @@ public class FuselagePart : Part
 			5 => GetMidSectionSidePoint(3),
 			_ => Vector3.zero
 		};
+	}
+
+	private static FuselageSectionSettings ScaleSectionShape(FuselageSectionSettings section, float scale)
+	{
+		section.Width *= scale;
+		section.Height *= scale;
+		ScaleCornerRadiusIfRounded(ref section.CornerRadii.X, section.CornerStretch.X, scale);
+		ScaleCornerRadiusIfRounded(ref section.CornerRadii.Y, section.CornerStretch.Y, scale);
+		ScaleCornerRadiusIfRounded(ref section.CornerRadii.Z, section.CornerStretch.Z, scale);
+		ScaleCornerRadiusIfRounded(ref section.CornerRadii.W, section.CornerStretch.W, scale);
+		return section;
+	}
+
+	private static void ScaleCornerRadiusIfRounded(ref float radius, bool stretched, float scale)
+	{
+		if (!stretched)
+		{
+			radius *= scale;
+		}
+	}
+
+	private static bool TryGetPositiveUniformScale(Vector3 scale, float epsilon, out float uniformScale)
+	{
+		uniformScale = scale.x;
+		epsilon = Mathf.Max(0.000001f, epsilon);
+		return float.IsFinite(scale.x)
+			&& float.IsFinite(scale.y)
+			&& float.IsFinite(scale.z)
+			&& scale.x > epsilon
+			&& Mathf.Abs(scale.x - scale.y) <= epsilon
+			&& Mathf.Abs(scale.x - scale.z) <= epsilon;
 	}
 
 	// 对整机中可兼容的机身接缝端面执行法线平滑。 / Smooth seam normals between compatible neighboring fuselage ends across the craft.

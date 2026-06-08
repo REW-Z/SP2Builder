@@ -58,6 +58,8 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 	private const string GenerateSelectedEndFramesMenuPath = "Tools/SP2 Craft Editor/Fuselage/Generate End Frames From Selected";
 
+	private const string ResetSelectedCylinderScaleMenuPath = "Tools/SP2 Craft Editor/Fuselage/Reset Selected Cylinder Scale";
+
 	private bool _showRearSection = true;
 
 	private bool _showFrontSection = true;
@@ -415,10 +417,81 @@ public class FuselagePartEditor : UnityEditor.Editor
 		return TryGetSingleSelectedFuselage(out _);
 	}
 
+	[MenuItem(ResetSelectedCylinderScaleMenuPath)]
+	// 把选中圆筒的等比 Transform scale 烘进截面和长度，再把 scale 重置为 1。 / Bake selected cylinders' uniform Transform scale into shape data and reset scale to 1.
+	private static void ResetSelectedCylinderScale()
+	{
+		FuselagePart[] selected = GetSelectedFuselages();
+		if (selected.Length == 0)
+		{
+			return;
+		}
+
+		int resetCount = 0;
+		int skippedConeCount = 0;
+		int skippedScaleCount = 0;
+		HashSet<Craft> affectedCrafts = new HashSet<Craft>();
+		foreach (FuselagePart fuselage in selected)
+		{
+			if (fuselage == null)
+			{
+				continue;
+			}
+
+			if (!fuselage.SupportsLinearCylinderTools())
+			{
+				skippedConeCount++;
+				continue;
+			}
+
+			if (!fuselage.CanResetUniformScaleToShape())
+			{
+				skippedScaleCount++;
+				continue;
+			}
+
+			Undo.RecordObjects(new Object[] { fuselage, fuselage.transform }, "Reset Fuselage Scale");
+			if (!fuselage.TryResetUniformScaleToShape())
+			{
+				skippedScaleCount++;
+				continue;
+			}
+
+			resetCount++;
+			EditorUtility.SetDirty(fuselage);
+			EditorUtility.SetDirty(fuselage.transform);
+			Craft craft = fuselage.GetComponentInParent<Craft>();
+			if (craft != null)
+			{
+				affectedCrafts.Add(craft);
+			}
+		}
+
+		foreach (Craft craft in affectedCrafts)
+		{
+			EditorUtility.SetDirty(craft);
+			craft.RebuildAllPreviews(lightweight: false);
+		}
+
+		if (resetCount > 0)
+		{
+			EditorApplication.QueuePlayerLoopUpdate();
+			SceneView.RepaintAll();
+		}
+
+		Debug.Log($"Reset fuselage scale: {resetCount} applied, {skippedConeCount} cone skipped, {skippedScaleCount} non-uniform/default scale skipped.");
+	}
+
+	[MenuItem(ResetSelectedCylinderScaleMenuPath, true)]
+	private static bool ValidateResetSelectedCylinderScale()
+	{
+		return GetSelectedFuselages().Any(fuselage => fuselage != null && fuselage.CanResetUniformScaleToShape());
+	}
+
 	// 读取当前是否只选中了一个可编辑机身。 / Check whether the current selection contains exactly one editable fuselage.
 	private static bool TryGetSingleSelectedFuselage(out FuselagePart fuselage)
 	{
-		FuselagePart[] selected = Selection.GetFiltered<FuselagePart>(SelectionMode.Editable | SelectionMode.ExcludePrefab | SelectionMode.TopLevel);
+		FuselagePart[] selected = GetSelectedFuselages();
 		fuselage = selected.Length == 1 ? selected[0] : null;
 		return fuselage != null;
 	}
@@ -426,7 +499,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 	// 读取当前是否选中了同一 Craft 下的两个机身。 / Check whether the current selection contains two fuselages under the same craft.
 	private static bool TryGetSelectedFuselagePair(out FuselagePart first, out FuselagePart second, out Craft craft)
 	{
-		FuselagePart[] selected = Selection.GetFiltered<FuselagePart>(SelectionMode.Editable | SelectionMode.ExcludePrefab | SelectionMode.TopLevel);
+		FuselagePart[] selected = GetSelectedFuselages();
 		first = selected.Length == 2 ? selected[0] : null;
 		second = selected.Length == 2 ? selected[1] : null;
 		craft = null;
@@ -437,6 +510,11 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 		craft = first.GetComponentInParent<Craft>();
 		return craft != null && craft == second.GetComponentInParent<Craft>() && first != second;
+	}
+
+	private static FuselagePart[] GetSelectedFuselages()
+	{
+		return Selection.GetFiltered<FuselagePart>(SelectionMode.Editable | SelectionMode.ExcludePrefab | SelectionMode.TopLevel);
 	}
 
 	// 按比例从当前选中的机身生成前后两段，原机身保持不变。 / Create rear and front slice spans from the selected fuselage while keeping the source unchanged.
