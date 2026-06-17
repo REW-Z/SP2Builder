@@ -17,7 +17,7 @@ public struct FuselageSectionSettings
 	[Range(-1f, 1f)]
 	public float Trapezium;
 
-	[Range(0f, 1f)]
+	[Range(0.01f, 1f)]
 	public float Thickness;
 
 	public Float4Value CornerRadii;
@@ -214,7 +214,7 @@ public struct FuselageSectionSettings
 		Width = Mathf.Max(minimumDimension, Width);
 		Height = Mathf.Max(minimumDimension, Height);
 		Trapezium = Mathf.Clamp(Trapezium, -1f, 1f);
-		Thickness = Mathf.Clamp(Thickness, 0f, 0.99f);
+		Thickness = Mathf.Clamp(Thickness, 0.01f, 1f);
 		CornerRadii.X = Mathf.Max(0f, CornerRadii.X);
 		CornerRadii.Y = Mathf.Max(0f, CornerRadii.Y);
 		CornerRadii.Z = Mathf.Max(0f, CornerRadii.Z);
@@ -973,7 +973,7 @@ internal static class FuselageGeometry
 	// 估算 hollow cone 内腔 tip 相对外壳 tip 需要后退的距离。 / Estimate how far the hollow-cone inner tip should retract behind the outer tip.
 	private static float GetConeInnerTipInset(FuselageSectionSettings rear)
 	{
-		return Mathf.Max(0f, Mathf.Min(rear.Width, rear.Height) * Mathf.Clamp(rear.Thickness, 0f, 0.99f) * 0.5f);
+		return GetSectionAbsoluteInset(rear);
 	}
 
 	private static int RequiredIntermediateSlices(FuselageSectionSettings a, FuselageSectionSettings b)
@@ -1394,24 +1394,7 @@ internal static class FuselageGeometry
 		return result;
 	}
 
-	// 当几何 inset 对薄壁 hollow 截面失败时，退化成简单缩放的内环。 / Build a simple scaled inner loop when geometric insetting fails for thin hollow sections.
-	private static FuselageSectionSettings BuildInnerSectionSettings(FuselageSectionSettings section)
-	{
-		return BuildInnerSectionSettings(section, FuselageSectionSettings.DefaultMinimumDimension);
-	}
-
-	private static FuselageSectionSettings BuildInnerSectionSettings(FuselageSectionSettings section, float minimumDimension)
-	{
-		FuselageSectionSettings inner = section;
-		float scale = 1f - Mathf.Clamp(section.Thickness, 0f, 0.99f);
-		inner.Width = Mathf.Max(minimumDimension, section.Width * scale);
-		inner.Height = Mathf.Max(minimumDimension, section.Height * scale);
-		inner.Thickness = 0f;
-		inner.SanitizeInterpolated(minimumDimension);
-		return inner;
-	}
-
-	// 原版 Hollow 直接生成独立的 inner section；这里保持同一主路径，不再退回旧的几何 inset fallback。 / Original Hollow generates a dedicated inner section directly; keep the runtime on that same path instead of falling back to the old geometric inset flow.
+	// 原版新版 JFuselage 会先生成外轮廓，再按绝对 inset 内缩作为 hollow 内环。 / Modern JFuselage generates the outer outline first, then applies an absolute inset for the hollow inner ring.
 	private static bool TryBuildInnerRing(FuselageSectionSettings section, Vector3 center, RingProfile outerRing, out RingProfile innerRing)
 	{
 		return TryBuildInnerRing(section, center, outerRing, FuselageSectionSettings.DefaultMinimumDimension, out innerRing);
@@ -1425,8 +1408,14 @@ internal static class FuselageGeometry
 			return false;
 		}
 
-		FuselageSectionSettings innerSection = BuildInnerSectionSettings(section, minimumDimension);
-		RingProfile directInnerRing = BuildSectionRing(innerSection, center, minimumDimension);
+		List<SectionPoint> insetPoints = CopyRingPoints(outerRing);
+		float actualInset = InsetSectionPoints(insetPoints, GetSectionAbsoluteInset(section), GetSectionInsetMinimumSize(section));
+		if (actualInset <= Epsilon || insetPoints.Count < 3)
+		{
+			return false;
+		}
+
+		RingProfile directInnerRing = CreateRingProfile(insetPoints, center);
 		if (directInnerRing.Count < 3 || !IsInsetLoopInside(outerRing.Points, directInnerRing.Points))
 		{
 			return false;
@@ -1434,6 +1423,216 @@ internal static class FuselageGeometry
 
 		innerRing = directInnerRing;
 		return innerRing.Count >= 3;
+	}
+
+	// 按原版 AbsoluteThickness 语义计算内缩距离，0.01 是游戏 UI 和 SectionParams.Inner 的最小 thickness。 / Compute the inset distance using original AbsoluteThickness semantics; 0.01 matches the game UI and SectionParams.Inner minimum thickness.
+	private static float GetSectionAbsoluteInset(FuselageSectionSettings section)
+	{
+		return Mathf.Max(0f, Mathf.Min(section.Width, section.Height) * 0.5f * Mathf.Clamp(section.Thickness, 0.01f, 1f));
+	}
+
+	// 原版 SimpleInset 的 minSize 取最小半尺寸的 1%。 / Original SimpleInset uses one percent of the minimum half-size as the minimum inset size.
+	private static float GetSectionInsetMinimumSize(FuselageSectionSettings section)
+	{
+		return Mathf.Max(0f, Mathf.Min(section.Width, section.Height) * 0.5f * 0.01f);
+	}
+
+	private static List<SectionPoint> CopyRingPoints(RingProfile ring)
+	{
+		List<SectionPoint> points = new List<SectionPoint>(ring.Count);
+		for (int i = 0; i < ring.Count; i++)
+		{
+			points.Add(new SectionPoint(
+				ring.Points[i],
+				ring.Fractions[i],
+				ring.InTangents[i],
+				ring.OutTangents[i],
+				ring.Sharp[i]));
+		}
+
+		return points;
+	}
+
+	// Vector2 版本的原版 SimpleInset.Inset(Point) 逻辑，用于复刻 hollow inner ring。 / Vector2 version of original SimpleInset.Inset(Point), used to reproduce the hollow inner ring.
+	private static float InsetSectionPoints(List<SectionPoint> points, float insetBy, float minSize)
+	{
+		if (points == null || points.Count < 3 || insetBy <= Epsilon)
+		{
+			return 0f;
+		}
+
+		float remaining = insetBy;
+		const int maxIterations = 64;
+		for (int iteration = 0; iteration < maxIterations && remaining > Epsilon && points.Count >= 3; iteration++)
+		{
+			RemoveNearDuplicateSectionPoints(points);
+			if (points.Count < 3)
+			{
+				break;
+			}
+
+			int count = points.Count;
+			float[] shrinkage = new float[count];
+			Vector2[] velocity = new Vector2[count];
+			for (int i = 0; i < count; i++)
+			{
+				Vector2 current = points[i].Position;
+				Vector2 previous = points[(i - 1 + count) % count].Position;
+				Vector2 next = points[(i + 1) % count].Position;
+				Vector2 inVec = current - previous;
+				Vector2 outVec = next - current;
+				if (inVec.sqrMagnitude <= Epsilon * Epsilon || outVec.sqrMagnitude <= Epsilon * Epsilon)
+				{
+					shrinkage[i] = 0f;
+					velocity[i] = Vector2.zero;
+					continue;
+				}
+
+				shrinkage[i] = ComputePointShrinkage(inVec, outVec);
+				velocity[i] = ComputePointVelocity(shrinkage[i], inVec);
+			}
+
+			float step = remaining;
+			float maxEdgeLimit = 0f;
+			List<int> edgesToMerge = new List<int>();
+			for (int i = 0; i < count; i++)
+			{
+				int next = (i + 1) % count;
+				float shrink = shrinkage[i] + shrinkage[next];
+				if (Mathf.Abs(shrink) <= Epsilon)
+				{
+					continue;
+				}
+
+				float edgeLimit = Vector2.Distance(points[i].Position, points[next].Position) / shrink;
+				maxEdgeLimit = Mathf.Max(maxEdgeLimit, edgeLimit);
+				if (step + Epsilon >= edgeLimit)
+				{
+					if (edgeLimit < step - 0.00001f)
+					{
+						edgesToMerge.Clear();
+					}
+
+					step = Mathf.Min(step, edgeLimit);
+					edgesToMerge.Add(i);
+				}
+			}
+
+			if (minSize > Epsilon && maxEdgeLimit > Epsilon)
+			{
+				float minSizeStep = maxEdgeLimit - minSize;
+				if (minSizeStep <= Epsilon)
+				{
+					break;
+				}
+				if (step > minSizeStep - Epsilon)
+				{
+					step = minSizeStep;
+					edgesToMerge.Clear();
+				}
+			}
+
+			if (step > Epsilon)
+			{
+				for (int i = 0; i < count; i++)
+				{
+					SectionPoint point = points[i];
+					point.Position += velocity[i] * step;
+					points[i] = point;
+				}
+			}
+
+			remaining -= step;
+			if (edgesToMerge.Count > 0)
+			{
+				MergeSectionPointEdges(points, edgesToMerge);
+			}
+
+			if (step <= Epsilon && edgesToMerge.Count == 0)
+			{
+				break;
+			}
+		}
+
+		RemoveNearDuplicateSectionPoints(points);
+		return insetBy - Mathf.Max(0f, remaining);
+	}
+
+	private static float ComputePointShrinkage(Vector2 inVec, Vector2 outVec)
+	{
+		Vector2 inDir = inVec.normalized;
+		Vector2 outDir = outVec.normalized;
+		Vector2 inNormal = RotateClockwise(inDir);
+		Vector2 outNormal = RotateClockwise(outDir);
+		float denominator = Vector2.Dot(inNormal, outDir);
+		return Mathf.Abs(denominator) > Epsilon
+			? Vector2.Dot(inNormal - outNormal, inNormal) / denominator
+			: 0f;
+	}
+
+	private static Vector2 ComputePointVelocity(float shrinkage, Vector2 inVec)
+	{
+		Vector2 inDir = inVec.normalized;
+		return RotateClockwise(inDir) - inDir * shrinkage;
+	}
+
+	private static Vector2 RotateClockwise(Vector2 value)
+	{
+		return new Vector2(value.y, -value.x);
+	}
+
+	private static void MergeSectionPointEdges(List<SectionPoint> points, List<int> edgesToMerge)
+	{
+		for (int i = 0; i < edgesToMerge.Count && points.Count >= 3; i++)
+		{
+			int index = edgesToMerge[i] - i;
+			while (index < 0)
+			{
+				index += points.Count;
+			}
+
+			index %= points.Count;
+			int next = (index + 1) % points.Count;
+			SectionPoint current = points[index];
+			SectionPoint nextPoint = points[next];
+			current.OutTangent = nextPoint.Sharp ? nextPoint.InTangent : nextPoint.OutTangent;
+			current.Sharp = true;
+			current.Fraction = AverageFractions(current.Fraction, nextPoint.Fraction);
+			points[index] = current;
+			points.RemoveAt(next);
+		}
+	}
+
+	private static float AverageFractions(float a, float b)
+	{
+		float angleA = a * Mathf.PI * 2f;
+		float angleB = b * Mathf.PI * 2f;
+		Vector2 vector = new Vector2(Mathf.Sin(angleA) + Mathf.Sin(angleB), Mathf.Cos(angleA) + Mathf.Cos(angleB));
+		return vector.sqrMagnitude <= Epsilon * Epsilon
+			? Mathf.Repeat(a, 1f)
+			: Mathf.Repeat(Mathf.Atan2(vector.x, vector.y) / (Mathf.PI * 2f), 1f);
+	}
+
+	private static void RemoveNearDuplicateSectionPoints(List<SectionPoint> points)
+	{
+		for (int i = points.Count - 1; i >= 0; i--)
+		{
+			SectionPoint current = points[i];
+			SectionPoint next = points[(i + 1) % points.Count];
+			if (Vector2.Distance(current.Position, next.Position) > Epsilon)
+			{
+				continue;
+			}
+
+			current.OutTangent = next.Sharp ? next.InTangent : next.OutTangent;
+			current.Sharp = current.Sharp || next.Sharp;
+			points[i] = current;
+			points.RemoveAt((i + 1) % points.Count);
+			if (points.Count < 3)
+			{
+				return;
+			}
+		}
 	}
 
 	private static bool IsInsetLoopInside(List<Vector2> outer, List<Vector2> inner)
@@ -2461,11 +2660,11 @@ internal static class FuselageGeometry
 		maxCutting = new Float4Value(1f - bottomMin, 1f - leftMin, 1f - topMin, 1f - rightMin);
 	}
 
-	// 原版会先根据真实截面轮廓算出 minSlicing，再让 cutting 从轮廓最外缘开始推进；这里直接取当前轮廓外包围来复现同一语义。 / The original computes minSlicing from the actual section outline so cutting starts from the true outer silhouette; use the live outline bounds here to reproduce that behavior.
+	// 原版会先根据 GenerateSection 的真实截面点算出 minSlicing；这里复用实际 loft ring，避免 edge curvature 外鼓被名义轮廓漏掉。 / The original computes minSlicing from generated section points; reuse the actual loft ring so edge-curvature bulges are not missed by the nominal outline.
 	private static ClipBounds GetOutlineBounds(FuselageSectionSettings section, Vector2 center)
 	{
-		List<Vector2> outline = BuildSectionOutline(section, null, out _);
-		if (outline == null || outline.Count < 3)
+		RingProfile ring = BuildSectionRing(section, new Vector3(center.x, center.y, 0f));
+		if (ring == null || ring.Points == null || ring.Points.Count < 3)
 		{
 			return new ClipBounds(
 				center.x - section.Width * 0.5f,
@@ -2478,9 +2677,9 @@ internal static class FuselageGeometry
 		float minY = float.PositiveInfinity;
 		float maxX = float.NegativeInfinity;
 		float maxY = float.NegativeInfinity;
-		for (int i = 0; i < outline.Count; i++)
+		for (int i = 0; i < ring.Points.Count; i++)
 		{
-			Vector2 point = outline[i] + center;
+			Vector2 point = ring.Points[i];
 			minX = Mathf.Min(minX, point.x);
 			minY = Mathf.Min(minY, point.y);
 			maxX = Mathf.Max(maxX, point.x);

@@ -56,6 +56,8 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 	private bool _suppressPreviewQueue;
 
+	private bool _suppressPartDestroyCleanup;
+
 	private readonly Dictionary<int, Part> _partById = new Dictionary<int, Part>();
 
 	private bool _partIndexDirty = true;
@@ -94,13 +96,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 	private bool _activePreviewRebuildLightweight;
 
-	private bool _activePreviewTouchedFuselage;
-
-	private readonly HashSet<int> _activePreviewFuselagePartIds = new HashSet<int>();
-
 	private bool _incrementalPreviewRebuildActive;
-
-	private bool _postRebuildSmoothingQueued;
 
 	private bool _delayedRebuildPending;
 
@@ -234,9 +230,9 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		_themeMaterials = ParseThemeMaterials(aircraftElement.Element("Theme"));
 		PreviewMaterialFactory.ClearThemedMaterialCache();
 		XElement partsElement = aircraftElement.Element("Assembly")?.Element("Parts");
-		HashSet<int> importedPartIds = CollectImportedPartIds(partsElement);
+		int[] importedOrderedPartIds = CollectImportedOrderedPartIds(partsElement);
 		CapturePartHierarchySnapshot();
-		LogRemovedPinnedParts(Info.RemoveMissingPinnedParts(importedPartIds));
+		LogRemovedCraftInfoRecords(Info.RemoveStalePartRecordsByImportedOrder(importedOrderedPartIds));
 
 		_suppressPreviewQueue = true;
 		try
@@ -257,6 +253,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 			}
 
 			ImportConnections(aircraftElement.Element("Assembly")?.Element("Connections"));
+			Info.CapturePartOrderSnapshot(GetExportParts().ToList());
 		}
 		finally
 		{
@@ -381,6 +378,30 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 	public bool IsPartPinned(Part part)
 	{
 		return part != null && Info.IsPinned(part.PartId);
+	}
+
+	// 当编辑器里删除 Part 时，清理连接图和 CraftInfo 中对应的缓存。 / Clean the connection graph and CraftInfo cache when a Part is deleted in the editor.
+	public void HandlePartDestroyed(Part removedPart)
+	{
+		if (_suppressPartDestroyCleanup || removedPart == null || removedPart.PartId <= 0)
+		{
+			return;
+		}
+
+		int removedPartId = removedPart.PartId;
+		_partIndexDirty = true;
+		if (ContainsAnotherPartWithId(removedPart, removedPartId))
+		{
+			return;
+		}
+
+		Undo.RecordObject(this, "Delete Part Cleanup");
+		RemoveConnectionsReferencingPart(removedPartId, removedPart);
+		Info.RemovePartRecords(new[] { removedPartId });
+		_partById.Remove(removedPartId);
+		RefreshConnectionDataFlag();
+		EditorUtility.SetDirty(this);
+		RepaintScene();
 	}
 
 	// 对 pinned 零件执行一次低成本校准。 / Run one low-cost correction pass for a pinned part.
@@ -655,6 +676,48 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		return new Vector3(-direction.x, direction.y, direction.z);
 	}
 
+	private bool ContainsAnotherPartWithId(Part removedPart, int partId)
+	{
+		foreach (Part candidate in GetComponentsInChildren<Part>(includeInactive: true))
+		{
+			if (candidate == null || candidate == removedPart)
+			{
+				continue;
+			}
+
+			if (candidate.PartId == partId)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	private int RemoveConnectionsReferencingPart(int removedPartId, Part removedPart)
+	{
+		int removedCount = 0;
+		foreach (Part part in GetComponentsInChildren<Part>(includeInactive: true))
+		{
+			if (part == null || part == removedPart)
+			{
+				continue;
+			}
+
+			bool referencesRemovedPart = part.ConnectionEndpoints.Any(endpoint => endpoint != null && endpoint.ConnectedPartId == removedPartId);
+			if (!referencesRemovedPart)
+			{
+				continue;
+			}
+
+			Undo.RecordObject(part, "Delete Part Cleanup");
+			removedCount += part.RemoveConnectionEndpointsToPart(removedPartId);
+			EditorUtility.SetDirty(part);
+		}
+
+		return removedCount;
+	}
+
 	// 把一个零件的连接端点同步成整个 Craft 中的双向连接图。 / Synchronize one part's endpoints into the craft-wide reciprocal connection graph.
 	public void SynchronizeConnectionsFrom(Part source, bool removeStaleReciprocals = true)
 	{
@@ -899,11 +962,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 			if (this == null || gameObject == null)
 			{
-				using(new SampleProfiler("FuselagePart.ApplyNeighbourSmoothing"))
-				{
-                    FinishQueuedPreviewRebuild(repaint: false);
-                }
-                    
+				FinishQueuedPreviewRebuild(repaint: false);
 				return;
 			}
 
@@ -923,9 +982,6 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 					if (part is FuselagePart fuselage)
 					{
-						_activePreviewTouchedFuselage = true;
-						_activePreviewFuselagePartIds.Add(fuselage.PartId);
-
 						using(new SampleProfiler("fuselage.RefreshPreview"))
 						{
                             fuselage.RefreshPreview();
@@ -954,30 +1010,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 				return;
 			}
 
-			if (_activePreviewTouchedFuselage)
-			{
-
-                using(new SampleProfiler("FuselagePart.ApplyNeighbourSmoothing"))
-				{
-                    FuselagePart.ApplyNeighbourSmoothing(this, _activePreviewFuselagePartIds);
-                }
-			}
-
-			bool shouldDelaySmoothing = _activePreviewTouchedFuselage;
-
-
-            using(new SampleProfiler("FuselagePart.ApplyNeighbourSmoothing"))
-            {
-                FinishQueuedPreviewRebuild(repaint: true);
-            }
-
-			if (shouldDelaySmoothing)
-			{
-                using(new SampleProfiler("QueuePostRebuildSmoothing"))
-				{
-                    QueuePostRebuildSmoothing();
-                }
-			}
+			FinishQueuedPreviewRebuild(repaint: true);
 		}
 		catch (Exception exception)
 		{
@@ -986,34 +1019,6 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 			FinishQueuedPreviewRebuild(repaint: false);
 			Debug.LogException(exception, this);
 		}
-	}
-
-	// 把接缝平滑延迟到重建结束后的下一次编辑器回调。 / Delay seam smoothing until the next editor callback after the rebuild completes.
-	private void QueuePostRebuildSmoothing()
-	{
-		if (_postRebuildSmoothingQueued)
-		{
-			return;
-		}
-
-		_postRebuildSmoothingQueued = true;
-		EditorApplication.delayCall -= ApplyPostRebuildSmoothing;
-		EditorApplication.delayCall += ApplyPostRebuildSmoothing;
-	}
-
-	// 执行重建后的机身接缝平滑，并刷新场景视图。 / Apply post-rebuild fuselage seam smoothing and repaint the scene.
-	private void ApplyPostRebuildSmoothing()
-	{
-		EditorApplication.delayCall -= ApplyPostRebuildSmoothing;
-		_postRebuildSmoothingQueued = false;
-		if (this == null || gameObject == null)
-		{
-			return;
-		}
-
-		FuselagePart.ApplyNeighbourSmoothing(this);
-		EditorApplication.QueuePlayerLoopUpdate();
-		SceneView.RepaintAll();
 	}
 
 	// 结束当前活动重建，并按需刷新场景。 / Finish the current active rebuild and repaint if requested.
@@ -1032,8 +1037,6 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
       ResetQueuedPreviewRequest();
 		ResetActivePreviewState();
 		EditorApplication.delayCall -= RunQueuedPreviewRebuild;
-		EditorApplication.delayCall -= ApplyPostRebuildSmoothing;
-		_postRebuildSmoothingQueued = false;
 	}
 
 	// 判断当前是否处于 Unity 场景反序列化后的初始回调批次。 / Check whether the current callback belongs to the first batch after Unity scene deserialization.
@@ -1167,12 +1170,10 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		_incrementalPreviewRebuildActive = false;
 	}
 
-	// 重置当前分帧重建游标和受影响机身集合。 / Reset the incremental rebuild cursor and touched fuselage tracking.
+	// 重置当前分帧重建游标。 / Reset the incremental rebuild cursor.
 	private void ResetActivePreviewProgress()
 	{
 		_activePreviewRebuildIndex = 0;
-		_activePreviewTouchedFuselage = false;
-		_activePreviewFuselagePartIds.Clear();
 	}
 
 	// 统一刷新编辑器场景视图和玩家循环。 / Refresh the editor scene view and player loop in one place.
@@ -1303,19 +1304,27 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		_partById.Clear();
 		_partIndexDirty = true;
 		Info.ClearRestoredHierarchyNodes();
-		foreach (Transform child in transform.Cast<Transform>().ToArray())
+		_suppressPartDestroyCleanup = true;
+		try
 		{
-			DestroyImmediate(child.gameObject);
+			foreach (Transform child in transform.Cast<Transform>().ToArray())
+			{
+				DestroyImmediate(child.gameObject);
+			}
+		}
+		finally
+		{
+			_suppressPartDestroyCleanup = false;
 		}
 	}
 
-	// 读取即将导入的 XML 中仍存在的 PartId。 / Read the PartIds still present in the XML being imported.
-	private static HashSet<int> CollectImportedPartIds(XElement partsElement)
+	// 按 XML 顺序读取即将导入的 PartId。 / Read imported PartIds in XML order.
+	private static int[] CollectImportedOrderedPartIds(XElement partsElement)
 	{
-		HashSet<int> partIds = new HashSet<int>();
+		List<int> partIds = new List<int>();
 		if (partsElement == null)
 		{
-			return partIds;
+			return partIds.ToArray();
 		}
 
 		foreach (XElement partElement in partsElement.Elements("Part"))
@@ -1327,18 +1336,18 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 			}
 		}
 
-		return partIds;
+		return partIds.ToArray();
 	}
 
-	// 缺失的 pinned Part 视为在外部游戏中被删除，导入时取消追踪并告警。 / Warn when pinned parts disappeared from the imported XML and are no longer tracked.
-	private void LogRemovedPinnedParts(IReadOnlyList<int> removedPartIds)
+	// 缺失或被复用的 Part 视为在外部游戏中被删除，导入时取消追踪并告警。 / Warn when missing or reused Parts are no longer tracked.
+	private void LogRemovedCraftInfoRecords(IReadOnlyList<int> removedPartIds)
 	{
 		if (removedPartIds == null || removedPartIds.Count == 0)
 		{
 			return;
 		}
 
-		Debug.LogWarning($"CraftInfo stopped tracking missing pinned part ids: {string.Join(",", removedPartIds)}", this);
+		Debug.LogWarning($"CraftInfo stopped tracking stale part ids: {string.Join(",", removedPartIds)}", this);
 	}
 
 	// 从 Assembly/Connections XML 中重建零件间的双向连接关系。 / Rebuild reciprocal part connections from the Assembly/Connections XML.

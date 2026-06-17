@@ -22,6 +22,9 @@ public sealed class CraftInfo
 	[SerializeField, HideInInspector]
 	private PinnedPartTransformRecord[] _pinnedPartTransforms = Array.Empty<PinnedPartTransformRecord>();
 
+	[SerializeField, HideInInspector]
+	private int[] _orderedPartIds = Array.Empty<int>();
+
 	[NonSerialized]
 	private Dictionary<int, HierarchyNodeRecord> _hierarchyNodeById;
 
@@ -39,6 +42,8 @@ public sealed class CraftInfo
 	public IReadOnlyList<PartHierarchyAssignment> HierarchyAssignments => _hierarchyAssignments ?? Array.Empty<PartHierarchyAssignment>();
 
 	public IReadOnlyList<PinnedPartTransformRecord> PinnedPartTransforms => _pinnedPartTransforms ?? Array.Empty<PinnedPartTransformRecord>();
+
+	public IReadOnlyList<int> OrderedPartIds => _orderedPartIds ?? Array.Empty<int>();
 
 	[Serializable]
 	public sealed class HierarchyNodeRecord
@@ -106,6 +111,7 @@ public sealed class CraftInfo
 	// 记录当前 Unity 分类树，供下一次 XML 导入后还原。 / Capture the current Unity grouping tree for restoration after the next XML import.
 	public void CaptureHierarchySnapshot(Transform craftRoot, IReadOnlyList<Part> parts)
 	{
+		CapturePartOrderSnapshot(parts);
 		if (craftRoot == null)
 		{
 			return;
@@ -127,6 +133,20 @@ public sealed class CraftInfo
 		_hierarchyNodes = nodes.ToArray();
 		_hierarchyAssignments = assignments.ToArray();
 		RebuildHierarchyLookup();
+	}
+
+	// 保存当前 XML 导出使用的 PartId 顺序，用于下次导入时识别原游戏复用旧 ID 的新零件。 / Store the current XML export PartId order so the next import can detect reused ids from the original game.
+	public void CapturePartOrderSnapshot(IReadOnlyList<Part> parts)
+	{
+		if (parts == null)
+		{
+			return;
+		}
+
+		_orderedPartIds = parts
+			.Where(part => part != null && part.PartId > 0)
+			.Select(part => part.PartId)
+			.ToArray();
 	}
 
 	// 根据当前缓存先恢复所有分类节点，之后创建 Part 时即可直接挂到目标父节点。 / Restore cached grouping nodes before Parts are recreated under their target parents.
@@ -295,38 +315,173 @@ public sealed class CraftInfo
 	// 导入 XML 已经不包含的 pinned Part 视为外部删除，清理对应 Pin 和层级映射。 / Treat pinned parts missing from the imported XML as external deletions and stop tracking them.
 	public int[] RemoveMissingPinnedParts(IReadOnlyCollection<int> importedPartIds)
 	{
-		EnsurePinnedLookup();
-		if (_pinnedTransformByPartId.Count == 0)
+		HashSet<int> imported = importedPartIds != null
+			? new HashSet<int>(importedPartIds)
+			: new HashSet<int>();
+		int[] removedPartIds = GetTrackedPartIds()
+			.Where(partId => !imported.Contains(partId))
+			.OrderBy(partId => partId)
+			.ToArray();
+		return RemovePartRecords(removedPartIds);
+	}
+
+	// 根据上次导出的 PartId 顺序和本次导入 XML 顺序，清理已删除或被原游戏复用的旧 Part 缓存。 / Remove stale cache records by comparing the previous export PartId order with the imported XML order.
+	public int[] RemoveStalePartRecordsByImportedOrder(IReadOnlyList<int> importedOrderedPartIds)
+	{
+		int[] cachedOrderedPartIds = _orderedPartIds ?? Array.Empty<int>();
+		if (cachedOrderedPartIds.Length == 0)
+		{
+			return RemoveMissingPinnedParts(importedOrderedPartIds != null ? new HashSet<int>(importedOrderedPartIds) : null);
+		}
+
+		List<int> stalePartIds = new List<int>();
+		int importedIndex = 0;
+		for (int cachedIndex = 0; cachedIndex < cachedOrderedPartIds.Length; cachedIndex++)
+		{
+			int cachedPartId = cachedOrderedPartIds[cachedIndex];
+			if (cachedPartId <= 0)
+			{
+				continue;
+			}
+
+			if (importedOrderedPartIds == null || importedIndex >= importedOrderedPartIds.Count)
+			{
+				stalePartIds.Add(cachedPartId);
+				continue;
+			}
+
+			int importedPartId = importedOrderedPartIds[importedIndex];
+			if (cachedPartId != importedPartId)
+			{
+				stalePartIds.Add(cachedPartId);
+				continue;
+			}
+			importedIndex++;
+		}
+
+		return RemovePartRecords(stalePartIds);
+	}
+
+	// 移除指定 PartId 对应的 Pin、层级分配和顺序快照记录。 / Remove pin, hierarchy assignment, and order snapshot records for the requested PartIds.
+	public int[] RemovePartRecords(IReadOnlyCollection<int> partIds)
+	{
+		if (partIds == null || partIds.Count == 0)
 		{
 			return Array.Empty<int>();
 		}
 
-		HashSet<int> imported = importedPartIds != null
-			? new HashSet<int>(importedPartIds)
-			: new HashSet<int>();
-		int[] removedPartIds = _pinnedTransformByPartId.Keys
-			.Where(partId => !imported.Contains(partId))
-			.OrderBy(partId => partId)
-			.ToArray();
-		if (removedPartIds.Length == 0)
+		HashSet<int> removedSet = new HashSet<int>(partIds.Where(partId => partId > 0));
+		if (removedSet.Count == 0)
 		{
-			return removedPartIds;
+			return Array.Empty<int>();
 		}
 
-		foreach (int partId in removedPartIds)
+		EnsurePinnedLookup();
+		foreach (int partId in removedSet)
 		{
 			_pinnedTransformByPartId.Remove(partId);
 		}
 
-		HashSet<int> removedSet = new HashSet<int>(removedPartIds);
 		_pinnedPartTransforms = _pinnedTransformByPartId.Values
 			.OrderBy(item => item.PartId)
 			.ToArray();
 		_hierarchyAssignments = (_hierarchyAssignments ?? Array.Empty<PartHierarchyAssignment>())
 			.Where(item => item != null && !removedSet.Contains(item.PartId))
 			.ToArray();
+		RemovePartIdsFromOrderSnapshot(removedSet);
+		PruneUnusedHierarchyNodes();
 		RebuildHierarchyLookup();
-		return removedPartIds;
+		return removedSet
+			.OrderBy(partId => partId)
+			.ToArray();
+	}
+
+	private int[] GetTrackedPartIds()
+	{
+		EnsurePinnedLookup();
+		HashSet<int> result = new HashSet<int>();
+		foreach (int partId in _pinnedTransformByPartId.Keys)
+		{
+			if (partId > 0)
+			{
+				result.Add(partId);
+			}
+		}
+
+		foreach (PartHierarchyAssignment assignment in _hierarchyAssignments ?? Array.Empty<PartHierarchyAssignment>())
+		{
+			if (assignment != null && assignment.PartId > 0)
+			{
+				result.Add(assignment.PartId);
+			}
+		}
+
+		foreach (int partId in _orderedPartIds ?? Array.Empty<int>())
+		{
+			if (partId > 0)
+			{
+				result.Add(partId);
+			}
+		}
+
+		return result.ToArray();
+	}
+
+	private void RemovePartIdsFromOrderSnapshot(IReadOnlyCollection<int> removedPartIds)
+	{
+		int[] sourceIds = _orderedPartIds ?? Array.Empty<int>();
+		List<int> keptIds = new List<int>(sourceIds.Length);
+		for (int i = 0; i < sourceIds.Length; i++)
+		{
+			int partId = sourceIds[i];
+			if (removedPartIds.Contains(partId))
+			{
+				continue;
+			}
+
+			keptIds.Add(partId);
+		}
+
+		_orderedPartIds = keptIds.ToArray();
+	}
+
+	private void PruneUnusedHierarchyNodes()
+	{
+		_hierarchyNodes ??= Array.Empty<HierarchyNodeRecord>();
+		_hierarchyAssignments ??= Array.Empty<PartHierarchyAssignment>();
+		if (_hierarchyNodes.Length == 0)
+		{
+			return;
+		}
+
+		HashSet<int> usedNodeIds = new HashSet<int>();
+		foreach (PartHierarchyAssignment assignment in _hierarchyAssignments)
+		{
+			if (assignment == null || assignment.ParentNodeId <= CraftRootHierarchyNodeId)
+			{
+				continue;
+			}
+
+			AddHierarchyNodeAndParents(assignment.ParentNodeId, usedNodeIds);
+		}
+
+		_hierarchyNodes = _hierarchyNodes
+			.Where(node => node != null && usedNodeIds.Contains(node.NodeId))
+			.ToArray();
+	}
+
+	private void AddHierarchyNodeAndParents(int nodeId, ISet<int> usedNodeIds)
+	{
+		if (nodeId <= CraftRootHierarchyNodeId || !usedNodeIds.Add(nodeId))
+		{
+			return;
+		}
+
+		EnsureHierarchyLookup();
+		if (_hierarchyNodeById.TryGetValue(nodeId, out HierarchyNodeRecord node) && node != null)
+		{
+			AddHierarchyNodeAndParents(node.ParentNodeId, usedNodeIds);
+		}
 	}
 
 	private void CaptureHierarchyNode(
@@ -455,6 +610,7 @@ public sealed class CraftInfo
 		_hierarchyNodes ??= Array.Empty<HierarchyNodeRecord>();
 		_hierarchyAssignments ??= Array.Empty<PartHierarchyAssignment>();
 		_pinnedPartTransforms ??= Array.Empty<PinnedPartTransformRecord>();
+		_orderedPartIds ??= Array.Empty<int>();
 	}
 
 	private static bool ApproximatelyPrecise(Vector3 a, Vector3 b)

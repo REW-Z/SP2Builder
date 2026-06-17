@@ -23,6 +23,19 @@ public enum FuselageVisualStyle
 	HollowCone
 }
 
+public readonly struct FuselageSideNormalSample
+{
+	public readonly Vector3 LocalPosition;
+
+	public readonly Vector3 LocalNormal;
+
+	public FuselageSideNormalSample(Vector3 localPosition, Vector3 localNormal)
+	{
+		LocalPosition = localPosition;
+		LocalNormal = localNormal;
+	}
+}
+
 [ExecuteAlways]
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class FuselagePart : Part
@@ -34,6 +47,8 @@ public class FuselagePart : Part
 	private const int MaxSpatialSmoothingFuselages = 96;
 
 	private const float ConeNeighbourSmoothMergeRadius = 0.01f;
+
+	private const int MaxNormalDisplayDensity = 32;
 
 	private static readonly float[] LegacyCornerRadiusFromStyle = { 0f, 0.25f, 0.5f, 1f };
 
@@ -655,6 +670,12 @@ public class FuselagePart : Part
 		return GetEndSection(front);
 	}
 
+	// 收集 Rear 端侧面顶点法线采样，供编辑器 Scene 视图调试显示。 / Collect rear-end side normal samples for editor scene-view visualization.
+	public void CollectRearSideNormalSamples(int density, List<FuselageSideNormalSample> samples)
+	{
+		CollectEndSideNormalSamples(front: false, density, samples);
+	}
+
 	// 把当前机身配置成 source 在 [startRatio,endRatio] 上的一段。 / Configure this fuselage as a span of source between startRatio and endRatio.
 	public void ConfigureAsSpanOf(FuselagePart source, float startRatio, float endRatio)
 	{
@@ -816,14 +837,26 @@ public class FuselagePart : Part
 	// 仅对受影响机身集合执行接缝法线平滑。 / Smooth seam normals only for the affected fuselage subset.
 	public static void ApplyNeighbourSmoothing(Craft craft, IReadOnlyCollection<int> affectedPartIds)
 	{
+		if (craft == null)
+		{
+			return;
+		}
+
 		FuselagePart[] fuselages = craft.GetComponentsInChildren<FuselagePart>(includeInactive: true);
+		HashSet<int> affectedPartIdSet = affectedPartIds == null ? null : new HashSet<int>(affectedPartIds);
 		Dictionary<FuselagePart, Vector3[]> baseNormals = new Dictionary<FuselagePart, Vector3[]>(fuselages.Length);
 		Dictionary<FuselagePart, Vector3[]> workingNormals = new Dictionary<FuselagePart, Vector3[]>(fuselages.Length);
-		HashSet<FuselagePart> writeBackFuselages = affectedPartIds != null ? new HashSet<FuselagePart>() : null;
+		HashSet<FuselagePart> writeBackFuselages = affectedPartIdSet != null ? new HashSet<FuselagePart>() : null;
+		HashSet<int> candidatePartIds = BuildSmoothingCandidatePartIds(fuselages, affectedPartIdSet, craft.HasConnectionData);
 		// 先缓存每个机身的原始法线，便于单向平滑时读取未污染的源数据。 / Capture each fuselage's original normals so one-sided smoothing can sample the untouched source.
 		for (int i = 0; i < fuselages.Length; i++)
 		{
 			FuselagePart fuselage = fuselages[i];
+			if (fuselage == null || (candidatePartIds != null && !candidatePartIds.Contains(fuselage.PartId)))
+			{
+				continue;
+			}
+
 			if (fuselage._meshFilter == null || fuselage._meshFilter.sharedMesh == null)
 			{
 				continue;
@@ -841,11 +874,11 @@ public class FuselagePart : Part
 
 		if (craft.HasConnectionData)
 		{
-			SmoothConnectedEnds(fuselages, baseNormals, workingNormals, affectedPartIds, writeBackFuselages);
+			SmoothConnectedEnds(fuselages, baseNormals, workingNormals, affectedPartIdSet, writeBackFuselages);
 		}
 		else if (fuselages.Length <= MaxSpatialSmoothingFuselages)
 		{
-			SmoothSpatiallyMatchedEnds(fuselages, baseNormals, workingNormals, affectedPartIds, writeBackFuselages);
+			SmoothSpatiallyMatchedEnds(fuselages, baseNormals, workingNormals, affectedPartIdSet, writeBackFuselages);
 		}
 
 		// 所有接缝配对结束后再写回法线，避免同一批数据重复写入 Mesh。 / Push normals back once after all seam pairs so the same mesh is not rewritten repeatedly.
@@ -860,6 +893,40 @@ public class FuselagePart : Part
 		}
 	}
 
+	private static HashSet<int> BuildSmoothingCandidatePartIds(IReadOnlyList<FuselagePart> fuselages, IReadOnlyCollection<int> affectedPartIds, bool hasConnectionData)
+	{
+		if (affectedPartIds == null || affectedPartIds.Count == 0 || !hasConnectionData)
+		{
+			return null;
+		}
+
+		HashSet<int> result = new HashSet<int>(affectedPartIds);
+		for (int i = 0; i < fuselages.Count; i++)
+		{
+			FuselagePart fuselage = fuselages[i];
+			if (fuselage == null || !affectedPartIds.Contains(fuselage.PartId))
+			{
+				continue;
+			}
+
+			foreach (PartConnectionEndpoint endpoint in fuselage.ConnectionEndpoints)
+			{
+				if ((endpoint.LocalAttachPointId != 0 && endpoint.LocalAttachPointId != 1)
+					|| (endpoint.ConnectedAttachPointId != 0 && endpoint.ConnectedAttachPointId != 1))
+				{
+					continue;
+				}
+
+				if (fuselage.TryGetConnectedPart(endpoint, out Part connectedPart) && connectedPart is FuselagePart connectedFuselage)
+				{
+					result.Add(connectedFuselage.PartId);
+				}
+			}
+		}
+
+		return result;
+	}
+
 	// 按显式连接关系平滑已连接机身端面的法线。 / Smooth normals across fuselage ends that are explicitly connected.
 	private static void SmoothConnectedEnds(
 		IReadOnlyList<FuselagePart> fuselages,
@@ -872,6 +939,11 @@ public class FuselagePart : Part
 		for (int i = 0; i < fuselages.Count; i++)
 		{
 			FuselagePart fuselage = fuselages[i];
+			if (fuselage == null || (affectedPartIds != null && !affectedPartIds.Contains(fuselage.PartId)))
+			{
+				continue;
+			}
+
 			foreach (PartConnectionEndpoint endpoint in fuselage.ConnectionEndpoints)
 			{
 				if ((endpoint.LocalAttachPointId != 0 && endpoint.LocalAttachPointId != 1)
@@ -918,11 +990,17 @@ public class FuselagePart : Part
 		IReadOnlyCollection<int> affectedPartIds,
 		ISet<FuselagePart> writeBackFuselages)
 	{
-		for (int i = 0; i < fuselages.Count; i++)
+		List<FuselagePart> primaryFuselages = affectedPartIds == null
+			? fuselages.Where(fuselage => fuselage != null).ToList()
+			: fuselages.Where(fuselage => fuselage != null && affectedPartIds.Contains(fuselage.PartId)).ToList();
+		HashSet<string> visitedPairs = new HashSet<string>();
+		for (int i = 0; i < primaryFuselages.Count; i++)
 		{
-			for (int j = i + 1; j < fuselages.Count; j++)
+			FuselagePart primary = primaryFuselages[i];
+			for (int j = 0; j < fuselages.Count; j++)
 			{
-				if (affectedPartIds != null && !affectedPartIds.Contains(fuselages[i].PartId) && !affectedPartIds.Contains(fuselages[j].PartId))
+				FuselagePart candidate = fuselages[j];
+				if (candidate == null || candidate == primary)
 				{
 					continue;
 				}
@@ -933,14 +1011,15 @@ public class FuselagePart : Part
 					for (int b = 0; b < 2; b++)
 					{
 						bool bFront = b == 1;
-						if (!AreEndsCompatible(fuselages[i], aFront, fuselages[j], bFront))
+						string key = BuildEndPairKey(primary, aFront, candidate, bFront);
+						if (!visitedPairs.Add(key) || !AreEndsCompatible(primary, aFront, candidate, bFront))
 						{
 							continue;
 						}
 
-						SmoothEndPair(fuselages[i], aFront, fuselages[j], bFront, baseNormals, workingNormals);
-						writeBackFuselages?.Add(fuselages[i]);
-						writeBackFuselages?.Add(fuselages[j]);
+						SmoothEndPair(primary, aFront, candidate, bFront, baseNormals, workingNormals);
+						writeBackFuselages?.Add(primary);
+						writeBackFuselages?.Add(candidate);
 					}
 				}
 			}
@@ -1185,6 +1264,14 @@ public class FuselagePart : Part
 		}
 
 		Vector3 seamNormal = target.GetSliceCraftNormal(targetFront);
+		Vector3[] sourceCraftPositions = new Vector3[sourceSeam.Count];
+		Vector3[] sourceCraftNormals = new Vector3[sourceSeam.Count];
+		for (int i = 0; i < sourceSeam.Count; i++)
+		{
+			int sourceIndex = sourceSeam[i];
+			sourceCraftPositions[i] = source.TransformPointToCraftSpace(sourceVertices[sourceIndex]);
+			sourceCraftNormals[i] = source.TransformDirectionToCraftSpace(sourceNormals[sourceIndex]);
+		}
 
 		// 为目标端面的每个接缝顶点寻找世界空间里最近的源顶点。 / Match each target seam vertex to the nearest source seam vertex in world space.
 		for (int i = 0; i < targetSeam.Count; i++)
@@ -1198,21 +1285,18 @@ public class FuselagePart : Part
 			float bestNormalScore = float.NegativeInfinity;
 			for (int j = 0; j < sourceSeam.Count; j++)
 			{
-				int candidate = sourceSeam[j];
-				Vector3 candidateCraftPosition = source.TransformPointToCraftSpace(sourceVertices[candidate]);
-				Vector3 delta = targetCraftPosition - candidateCraftPosition;
-				Vector3 candidateCraftNormal = source.TransformDirectionToCraftSpace(sourceNormals[candidate]);
+				Vector3 delta = targetCraftPosition - sourceCraftPositions[j];
 				float axialDistance = Mathf.Abs(Vector3.Dot(delta, seamNormal));
 				Vector3 planarDelta = delta - Vector3.Dot(delta, seamNormal) * seamNormal;
 				float planarDistance = planarDelta.sqrMagnitude;
-				float normalScore = Vector3.Dot(targetCraftNormal, candidateCraftNormal);
+				float normalScore = Vector3.Dot(targetCraftNormal, sourceCraftNormals[j]);
 				if (planarDistance < bestPlanarDistance - 0.0000001f
 					|| (Mathf.Abs(planarDistance - bestPlanarDistance) <= 0.0000001f && axialDistance < bestAxialDistance - 0.0000001f)
 					|| (Mathf.Abs(planarDistance - bestPlanarDistance) <= 0.0000001f && Mathf.Abs(axialDistance - bestAxialDistance) <= 0.0000001f && normalScore > bestNormalScore))
 				{
 					bestPlanarDistance = planarDistance;
 					bestAxialDistance = axialDistance;
-					bestSourceIndex = candidate;
+					bestSourceIndex = j;
 					bestNormalScore = normalScore;
 				}
 			}
@@ -1222,7 +1306,7 @@ public class FuselagePart : Part
 				continue;
 			}
 
-			Vector3 matchedSourceCraftNormal = source.TransformDirectionToCraftSpace(sourceNormals[bestSourceIndex]);
+			Vector3 matchedSourceCraftNormal = sourceCraftNormals[bestSourceIndex];
 			Vector3 resolved = setMean ? (targetCraftNormal + matchedSourceCraftNormal).normalized : matchedSourceCraftNormal;
 			if (resolved.sqrMagnitude <= 0.0001f)
 			{
@@ -1230,6 +1314,22 @@ public class FuselagePart : Part
 			}
 
 			targetNormals[targetIndex] = target.TransformDirectionFromCraftSpace(resolved);
+		}
+	}
+
+	private readonly struct SmoothVertexSample
+	{
+		public readonly int Index;
+
+		public readonly Vector3 CraftPosition;
+
+		public readonly Vector3 CraftNormal;
+
+		public SmoothVertexSample(int index, Vector3 craftPosition, Vector3 craftNormal)
+		{
+			Index = index;
+			CraftPosition = craftPosition;
+			CraftNormal = craftNormal;
 		}
 	}
 
@@ -1248,6 +1348,13 @@ public class FuselagePart : Part
 		float mergeDistanceSquared = ConeNeighbourSmoothMergeRadius * ConeNeighbourSmoothMergeRadius;
 		Vector3 targetPlaneNormal = target.GetAxisLocal(targetFront);
 		Vector3 sourcePlaneNormal = source.GetAxisLocal(sourceFront);
+		List<SmoothVertexSample> sourceSamples = BuildSmoothVertexSamples(source, sourceVertices, sourceNormals, sourcePlaneNormal);
+		if (sourceSamples.Count == 0)
+		{
+			return;
+		}
+
+		Dictionary<Vector3Int, List<int>> sourceGrid = BuildSmoothVertexGrid(sourceSamples, ConeNeighbourSmoothMergeRadius);
 
 		for (int targetIndex = 0; targetIndex < targetVertices.Length; targetIndex++)
 		{
@@ -1260,26 +1367,36 @@ public class FuselagePart : Part
 			Vector3 targetCraftPosition = target.TransformPointToCraftSpace(targetVertices[targetIndex]);
 			int bestSourceIndex = -1;
 			float bestScore = float.PositiveInfinity;
-			for (int sourceIndex = 0; sourceIndex < sourceVertices.Length; sourceIndex++)
+			Vector3Int centerCell = GetSmoothVertexCell(targetCraftPosition, ConeNeighbourSmoothMergeRadius);
+			for (int x = -1; x <= 1; x++)
 			{
-				if (IsFlatEndCapNormal(sourceNormals, sourceIndex, sourcePlaneNormal))
+				for (int y = -1; y <= 1; y++)
 				{
-					continue;
-				}
+					for (int z = -1; z <= 1; z++)
+					{
+						Vector3Int cell = new Vector3Int(centerCell.x + x, centerCell.y + y, centerCell.z + z);
+						if (!sourceGrid.TryGetValue(cell, out List<int> sourceSampleIndices))
+						{
+							continue;
+						}
 
-				Vector3 sourceCraftPosition = source.TransformPointToCraftSpace(sourceVertices[sourceIndex]);
-				float distance = (targetCraftPosition - sourceCraftPosition).sqrMagnitude;
-				if (distance > mergeDistanceSquared)
-				{
-					continue;
-				}
+						for (int i = 0; i < sourceSampleIndices.Count; i++)
+						{
+							SmoothVertexSample sample = sourceSamples[sourceSampleIndices[i]];
+							float distance = (targetCraftPosition - sample.CraftPosition).sqrMagnitude;
+							if (distance > mergeDistanceSquared)
+							{
+								continue;
+							}
 
-				Vector3 sourceCraftNormal = source.TransformDirectionToCraftSpace(sourceNormals[sourceIndex]);
-				float score = (sourceCraftNormal - targetCraftNormal).sqrMagnitude * 2f + distance;
-				if (score < bestScore)
-				{
-					bestScore = score;
-					bestSourceIndex = sourceIndex;
+							float score = (sample.CraftNormal - targetCraftNormal).sqrMagnitude * 2f + distance;
+							if (score < bestScore)
+							{
+								bestScore = score;
+								bestSourceIndex = sourceSampleIndices[i];
+							}
+						}
+					}
 				}
 			}
 
@@ -1288,7 +1405,7 @@ public class FuselagePart : Part
 				continue;
 			}
 
-			Vector3 matchedSourceCraftNormal = source.TransformDirectionToCraftSpace(sourceNormals[bestSourceIndex]);
+			Vector3 matchedSourceCraftNormal = sourceSamples[bestSourceIndex].CraftNormal;
 			Vector3 resolved = setMean ? (targetCraftNormal + matchedSourceCraftNormal).normalized : matchedSourceCraftNormal;
 			if (resolved.sqrMagnitude <= 0.0001f)
 			{
@@ -1297,6 +1414,58 @@ public class FuselagePart : Part
 
 			targetNormals[targetIndex] = target.TransformDirectionFromCraftSpace(resolved);
 		}
+	}
+
+	private static List<SmoothVertexSample> BuildSmoothVertexSamples(FuselagePart part, Vector3[] vertices, Vector3[] normals, Vector3 excludedPlaneNormal)
+	{
+		List<SmoothVertexSample> samples = new List<SmoothVertexSample>(vertices?.Length ?? 0);
+		if (part == null || vertices == null || normals == null)
+		{
+			return samples;
+		}
+
+		int count = Mathf.Min(vertices.Length, normals.Length);
+		for (int i = 0; i < count; i++)
+		{
+			if (IsFlatEndCapNormal(normals, i, excludedPlaneNormal))
+			{
+				continue;
+			}
+
+			samples.Add(new SmoothVertexSample(
+				i,
+				part.TransformPointToCraftSpace(vertices[i]),
+				part.TransformDirectionToCraftSpace(normals[i])));
+		}
+
+		return samples;
+	}
+
+	private static Dictionary<Vector3Int, List<int>> BuildSmoothVertexGrid(IReadOnlyList<SmoothVertexSample> samples, float cellSize)
+	{
+		Dictionary<Vector3Int, List<int>> grid = new Dictionary<Vector3Int, List<int>>();
+		for (int i = 0; i < samples.Count; i++)
+		{
+			Vector3Int cell = GetSmoothVertexCell(samples[i].CraftPosition, cellSize);
+			if (!grid.TryGetValue(cell, out List<int> indices))
+			{
+				indices = new List<int>();
+				grid[cell] = indices;
+			}
+
+			indices.Add(i);
+		}
+
+		return grid;
+	}
+
+	private static Vector3Int GetSmoothVertexCell(Vector3 position, float cellSize)
+	{
+		float safeCellSize = Mathf.Max(0.0001f, cellSize);
+		return new Vector3Int(
+			Mathf.FloorToInt(position.x / safeCellSize),
+			Mathf.FloorToInt(position.y / safeCellSize),
+			Mathf.FloorToInt(position.z / safeCellSize));
 	}
 
 	// 找出位于机身前后端面接缝平面上的顶点。 / Identify vertices that lie on a fuselage's front or rear seam plane.
@@ -1350,6 +1519,150 @@ public class FuselagePart : Part
 		}
 
 		return Mathf.Abs(Vector3.Dot(normal.normalized, planeNormal)) >= 0.9995f;
+	}
+
+	// 从当前 Mesh 中按端面平面筛出侧面法线，并按截面角度排序后插值加密。 / Read side normals from the current mesh end plane, sort them around the section, and add interpolated density samples.
+	private void CollectEndSideNormalSamples(bool front, int density, List<FuselageSideNormalSample> samples)
+	{
+		if (samples == null)
+		{
+			return;
+		}
+
+		samples.Clear();
+		density = Mathf.Clamp(density, 1, MaxNormalDisplayDensity);
+		if (_meshFilter == null)
+		{
+			_meshFilter = GetComponent<MeshFilter>();
+		}
+
+		Mesh mesh = _meshFilter != null ? _meshFilter.sharedMesh : null;
+		if (mesh == null || mesh.vertexCount == 0)
+		{
+			return;
+		}
+
+		Vector3[] vertices = mesh.vertices;
+		Vector3[] normals = mesh.normals;
+		if (vertices == null || normals == null || vertices.Length == 0 || normals.Length == 0)
+		{
+			return;
+		}
+
+		List<int> seamIndices = FindSeamVertices(vertices, normals, this, front, 0.00075f);
+		if (seamIndices.Count == 0)
+		{
+			return;
+		}
+
+		Vector3 center = GetSliceLocalPosition(front);
+		Vector3 planeNormal = GetAxisLocal(front);
+		List<SideNormalSortSample> ordered = new List<SideNormalSortSample>(seamIndices.Count);
+		AddOrderedSideNormalSamples(seamIndices, vertices, normals, center, planeNormal, rejectInnerRing: true, ordered);
+		if (ordered.Count == 0)
+		{
+			AddOrderedSideNormalSamples(seamIndices, vertices, normals, center, planeNormal, rejectInnerRing: false, ordered);
+		}
+		if (ordered.Count == 0)
+		{
+			return;
+		}
+
+		ordered.Sort(CompareSideNormalSamples);
+		for (int i = 0; i < ordered.Count; i++)
+		{
+			samples.Add(ordered[i].Sample);
+		}
+
+		if (density <= 1 || ordered.Count <= 1)
+		{
+			return;
+		}
+
+		for (int i = 0; i < ordered.Count; i++)
+		{
+			FuselageSideNormalSample current = ordered[i].Sample;
+			FuselageSideNormalSample next = ordered[(i + 1) % ordered.Count].Sample;
+			if ((current.LocalPosition - next.LocalPosition).sqrMagnitude <= 0.00000001f)
+			{
+				continue;
+			}
+
+			for (int step = 1; step < density; step++)
+			{
+				float t = step / (float)density;
+				Vector3 position = Vector3.Lerp(current.LocalPosition, next.LocalPosition, t);
+				Vector3 normal = Vector3.Lerp(current.LocalNormal, next.LocalNormal, t);
+				if (normal.sqrMagnitude <= 0.0001f)
+				{
+					normal = current.LocalNormal;
+				}
+
+				samples.Add(new FuselageSideNormalSample(position, normal.normalized));
+			}
+		}
+	}
+
+	private static void AddOrderedSideNormalSamples(
+		IReadOnlyList<int> seamIndices,
+		Vector3[] vertices,
+		Vector3[] normals,
+		Vector3 center,
+		Vector3 planeNormal,
+		bool rejectInnerRing,
+		List<SideNormalSortSample> ordered)
+	{
+		for (int i = 0; i < seamIndices.Count; i++)
+		{
+			int index = seamIndices[i];
+			if (index < 0 || index >= vertices.Length || index >= normals.Length)
+			{
+				continue;
+			}
+
+			Vector3 localNormal = normals[index];
+			if (localNormal.sqrMagnitude <= 0.0001f)
+			{
+				continue;
+			}
+
+			Vector3 localPosition = vertices[index];
+			Vector3 radial = localPosition - center;
+			radial -= Vector3.Dot(radial, planeNormal) * planeNormal;
+			Vector3 lateralNormal = localNormal - Vector3.Dot(localNormal, planeNormal) * planeNormal;
+			if (rejectInnerRing && radial.sqrMagnitude > 0.000001f && lateralNormal.sqrMagnitude > 0.000001f && Vector3.Dot(radial, lateralNormal) < -0.000001f)
+			{
+				continue;
+			}
+
+			float angle = Mathf.Atan2(radial.y, radial.x);
+			ordered.Add(new SideNormalSortSample(
+				new FuselageSideNormalSample(localPosition, localNormal.normalized),
+				angle,
+				index));
+		}
+	}
+
+	private static int CompareSideNormalSamples(SideNormalSortSample a, SideNormalSortSample b)
+	{
+		int angleCompare = a.Angle.CompareTo(b.Angle);
+		return angleCompare != 0 ? angleCompare : a.Index.CompareTo(b.Index);
+	}
+
+	private readonly struct SideNormalSortSample
+	{
+		public readonly FuselageSideNormalSample Sample;
+
+		public readonly float Angle;
+
+		public readonly int Index;
+
+		public SideNormalSortSample(FuselageSideNormalSample sample, float angle, int index)
+		{
+			Sample = sample;
+			Angle = angle;
+			Index = index;
+		}
 	}
 
 	// 返回指定前后端截面的局部空间中心点。 / Return the local-space center of the requested end slice.

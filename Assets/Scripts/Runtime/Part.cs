@@ -252,6 +252,21 @@ public abstract class Part : MonoBehaviour, ISerializationCallbackReceiver
 		_clearDeserializeSuppressionQueued = false;
 	}
 
+	// 在编辑器删除 Part 时通知 Craft 清理连接和 CraftInfo 缓存。 / Notify the owning Craft to clear connections and CraftInfo cache when this Part is deleted in the editor.
+	protected virtual void OnDestroy()
+	{
+		if (EditorApplication.isPlayingOrWillChangePlaymode)
+		{
+			return;
+		}
+
+		Craft craft = GetOwningCraft();
+		if (craft != null)
+		{
+			craft.HandlePartDestroyed(this);
+		}
+	}
+
 	// 序列化前无需写入额外状态。 / No extra state is written before Unity serialization.
 	public void OnBeforeSerialize()
 	{
@@ -405,6 +420,24 @@ public abstract class Part : MonoBehaviour, ISerializationCallbackReceiver
 				_connectionEndpoints.RemoveAt(i);
 			}
 		}
+	}
+
+	// 删除所有指向指定 PartId 的连接端点，并返回删除数量。 / Remove all connection endpoints that reference the given PartId and return the number removed.
+	public int RemoveConnectionEndpointsToPart(int connectedPartId)
+	{
+		int removedCount = 0;
+		for (int i = _connectionEndpoints.Count - 1; i >= 0; i--)
+		{
+			if (_connectionEndpoints[i].ConnectedPartId != connectedPartId)
+			{
+				continue;
+			}
+
+			_connectionEndpoints.RemoveAt(i);
+			removedCount++;
+		}
+
+		return removedCount;
 	}
 
 	// 按端点里的 connectedPartId 解析出对端零件。 / Resolve the connected part referenced by an endpoint.

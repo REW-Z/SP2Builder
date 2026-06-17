@@ -8,6 +8,8 @@ namespace SP2Builder.ManifoldRuntime
 	{
 		private const double MinimumValidVolume = 1.1920928955078125E-10d;
 
+		private const float CutMinimumEpsilon = 0.0001f;
+
 		// 把机身 loft 输入转成 manifold，并在需要时执行 section-cutting 相交。 / Convert loft input into a manifold and optionally apply section-cutting intersection.
 		public static GeneratedMeshData BuildLoft(GeneratedMeshData source, FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset, bool applySectionCutting, string meshName)
 		{
@@ -281,8 +283,14 @@ namespace SP2Builder.ManifoldRuntime
 
 			Vector2 rearCenter = -new Vector2(offset.x, offset.y) * 0.5f;
 			Vector2 frontCenter = new Vector2(offset.x, offset.y) * 0.5f;
-			CutBounds rearBounds = GetCutBounds(rear, rearCenter);
-			CutBounds frontBounds = GetCutBounds(front, frontCenter);
+			CutBounds rearBounds = GetCutBounds(rear, rearCenter, out Bool4Value rearActiveCuts);
+			CutBounds frontBounds = GetCutBounds(front, frontCenter, out Bool4Value frontActiveCuts);
+			if (!HasActiveCutting(rearActiveCuts) && !HasActiveCutting(frontActiveCuts))
+			{
+				return null;
+			}
+
+			ExpandSharedUncutSides(ref rearBounds, ref frontBounds, rearActiveCuts, frontActiveCuts, rear, front, offset);
 			return BuildCutVolumeData(
 				new Vector2(rearBounds.MinX, rearBounds.MinY),
 				new Vector2(rearBounds.MaxX, rearBounds.MaxY),
@@ -483,20 +491,90 @@ namespace SP2Builder.ManifoldRuntime
 				|| section.GetCutEnabled(3);
 		}
 
+		// 判断四个方向中是否有真实推进过最小值的 cutting。 / Check whether any side has a real cutting value beyond the minimum.
+		private static bool HasActiveCutting(Bool4Value activeCuts)
+		{
+			return activeCuts.X || activeCuts.Y || activeCuts.Z || activeCuts.W;
+		}
+
+		// 两端同一侧都处于最小值时，该侧按原版语义不参与 cut-volume，避免中段曲面被贴边裁切面擦削。 / If both ends stay at the minimum on one side, keep that side out of the cut-volume so the middle surface is not shaved by the boundary plane.
+		private static void ExpandSharedUncutSides(ref CutBounds rearBounds, ref CutBounds frontBounds, Bool4Value rearActiveCuts, Bool4Value frontActiveCuts, FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset)
+		{
+			float padding = GetCutBoundsPadding(rearBounds, frontBounds, rear, front, offset);
+			if (!rearActiveCuts.W && !frontActiveCuts.W)
+			{
+				float minX = Mathf.Min(rearBounds.MinX, frontBounds.MinX) - padding;
+				rearBounds = new CutBounds(minX, rearBounds.MinY, rearBounds.MaxX, rearBounds.MaxY);
+				frontBounds = new CutBounds(minX, frontBounds.MinY, frontBounds.MaxX, frontBounds.MaxY);
+			}
+			if (!rearActiveCuts.Y && !frontActiveCuts.Y)
+			{
+				float maxX = Mathf.Max(rearBounds.MaxX, frontBounds.MaxX) + padding;
+				rearBounds = new CutBounds(rearBounds.MinX, rearBounds.MinY, maxX, rearBounds.MaxY);
+				frontBounds = new CutBounds(frontBounds.MinX, frontBounds.MinY, maxX, frontBounds.MaxY);
+			}
+			if (!rearActiveCuts.Z && !frontActiveCuts.Z)
+			{
+				float minY = Mathf.Min(rearBounds.MinY, frontBounds.MinY) - padding;
+				rearBounds = new CutBounds(rearBounds.MinX, minY, rearBounds.MaxX, rearBounds.MaxY);
+				frontBounds = new CutBounds(frontBounds.MinX, minY, frontBounds.MaxX, frontBounds.MaxY);
+			}
+			if (!rearActiveCuts.X && !frontActiveCuts.X)
+			{
+				float maxY = Mathf.Max(rearBounds.MaxY, frontBounds.MaxY) + padding;
+				rearBounds = new CutBounds(rearBounds.MinX, rearBounds.MinY, rearBounds.MaxX, maxY);
+				frontBounds = new CutBounds(frontBounds.MinX, frontBounds.MinY, frontBounds.MaxX, maxY);
+			}
+		}
+
+		// 生成足够大的外扩距离，让被跳过的方向稳定落在机身外侧。 / Build a generous expansion distance so skipped directions stay outside the fuselage.
+		private static float GetCutBoundsPadding(CutBounds rearBounds, CutBounds frontBounds, FuselageSectionSettings rear, FuselageSectionSettings front, Vector3 offset)
+		{
+			float span = Mathf.Max(
+				Mathf.Abs(offset.x),
+				Mathf.Abs(offset.y),
+				Mathf.Abs(offset.z),
+				Mathf.Abs(rear.Width),
+				Mathf.Abs(rear.Height),
+				Mathf.Abs(front.Width),
+				Mathf.Abs(front.Height),
+				Mathf.Abs(rearBounds.MaxX - rearBounds.MinX),
+				Mathf.Abs(rearBounds.MaxY - rearBounds.MinY),
+				Mathf.Abs(frontBounds.MaxX - frontBounds.MinX),
+				Mathf.Abs(frontBounds.MaxY - frontBounds.MinY),
+				1f);
+			return span * 4f + 1f;
+		}
+
 		// 计算一个截面在本地 2D 平面中的有效 cutting 边界。 / Compute the effective local 2D cutting bounds for one section.
-		private static CutBounds GetCutBounds(FuselageSectionSettings section, Vector2 center)
+		private static CutBounds GetCutBounds(FuselageSectionSettings section, Vector2 center, out Bool4Value activeCuts)
 		{
 			section.GetCuttingRange(out Float4Value minCutting, out Float4Value maxCutting);
-			float cutTop = section.GetCutEnabled(0) ? Mathf.Clamp(section.CutTop, minCutting.X, maxCutting.X) : minCutting.X;
-			float cutRight = section.GetCutEnabled(1) ? Mathf.Clamp(section.CutRight, minCutting.Y, maxCutting.Y) : minCutting.Y;
-			float cutBottom = section.GetCutEnabled(2) ? Mathf.Clamp(section.CutBottom, minCutting.Z, maxCutting.Z) : minCutting.Z;
-			float cutLeft = section.GetCutEnabled(3) ? Mathf.Clamp(section.CutLeft, minCutting.W, maxCutting.W) : minCutting.W;
+			float cutTop = GetEffectiveCutValue(section, 0, minCutting.X, maxCutting.X, out bool topActive);
+			float cutRight = GetEffectiveCutValue(section, 1, minCutting.Y, maxCutting.Y, out bool rightActive);
+			float cutBottom = GetEffectiveCutValue(section, 2, minCutting.Z, maxCutting.Z, out bool bottomActive);
+			float cutLeft = GetEffectiveCutValue(section, 3, minCutting.W, maxCutting.W, out bool leftActive);
+			activeCuts = new Bool4Value(topActive, rightActive, bottomActive, leftActive);
 			float minX = center.x + (-0.5f + cutLeft) * section.Width;
 			float minY = center.y + (-0.5f + cutBottom) * section.Height;
 			float maxX = center.x + (0.5f - cutRight) * section.Width;
 			float maxY = center.y + (0.5f - cutTop) * section.Height;
 
 			return new CutBounds(minX, minY, maxX, maxY);
+		}
+
+		// 把小于等于 minCutting 的值解释为未切割，匹配原版 slider 左端写 null 的行为。 / Treat values at or below minCutting as uncut, matching the original slider writing null at the left edge.
+		private static float GetEffectiveCutValue(FuselageSectionSettings section, int side, float minCutting, float maxCutting, out bool active)
+		{
+			if (!section.GetCutEnabled(side))
+			{
+				active = false;
+				return minCutting;
+			}
+
+			float value = Mathf.Clamp(section.GetCutValue(side), minCutting, maxCutting);
+			active = value > minCutting + CutMinimumEpsilon;
+			return active ? value : minCutting;
 		}
 
 		// 对两个 Vector2 逐分量取最大值。 / Take the component-wise maximum of two Vector2 values.

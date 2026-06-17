@@ -5,6 +5,7 @@ using UnityEditor;
 using UnityEngine;
 
 
+[InitializeOnLoad]
 [CustomEditor(typeof(FuselagePart))]
 public class FuselagePartEditor : UnityEditor.Editor
 {
@@ -12,6 +13,13 @@ public class FuselagePartEditor : UnityEditor.Editor
 	{
 		Rounded,
 		Stretched
+	}
+
+	private struct RearSideNormalDisplaySettings
+	{
+		public bool Show;
+
+		public int Density;
 	}
 
 	private static readonly string[] CornerNames = { "Top Right", "Bottom Right", "Bottom Left", "Top Left" };
@@ -36,11 +44,23 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 	private const float MinimumExtensionRatio = 0.0001f;
 
+	private const float SliceRangeStep = 0.02f;
+
+	private const float SliceRangeStepInverse = 50f;
+
+	private const float SliceRangeEpsilon = 0.00001f;
+
+	private const float SliceNoCutEpsilon = 0.0001f;
+
 	private const float BridgeMinimumDistance = 0.0001f;
 
 	private const float BridgeNormalWarningDot = 0.98f;
 
 	private const float GeneratedFrameLength = 0.01f;
+
+	private const int RearSideNormalDensityMax = 16;
+
+	private const float RearSideNormalHandleScale = 1.6f;
 
 	private const string AutoConnectSelectedMenuPath = "Tools/SP2 Craft Editor/Fuselage/Auto Connect Selected #t";
 
@@ -60,6 +80,8 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 	private const string ResetSelectedCylinderScaleMenuPath = "Tools/SP2 Craft Editor/Fuselage/Reset Selected Cylinder Scale";
 
+	private const string SmoothSelectedFuselageSeamsMenuPath = "Tools/SP2 Craft Editor/Fuselage/Smooth Selected Fuselage Seams";
+
 	private bool _showRearSection = true;
 
 	private bool _showFrontSection = true;
@@ -68,6 +90,10 @@ public class FuselagePartEditor : UnityEditor.Editor
 
 	private static readonly Dictionary<string, GUIStyle> ColoredStyleCache = new Dictionary<string, GUIStyle>();
 
+	private static readonly Dictionary<int, RearSideNormalDisplaySettings> RearSideNormalDisplaySettingsByInstanceId = new Dictionary<int, RearSideNormalDisplaySettings>();
+
+	private static readonly List<FuselageSideNormalSample> RearSideNormalSamples = new List<FuselageSideNormalSample>(256);
+
 	private static readonly Color BaseInfoLabelColor = new Color(0.34f, 0.78f, 0.36f);
 
 	private static readonly Color CornerLabelColor = new Color(1f, 0.78f, 0.18f);
@@ -75,6 +101,12 @@ public class FuselagePartEditor : UnityEditor.Editor
 	private static readonly Color EdgeLabelColor = new Color(0.28f, 0.62f, 1f);
 
 	private static readonly Color SliceLabelColor = new Color(1f, 0.34f, 0.28f);
+
+	static FuselagePartEditor()
+	{
+		SceneView.duringSceneGui -= DrawRearSideNormalsInScene;
+		SceneView.duringSceneGui += DrawRearSideNormalsInScene;
+	}
 
 	// 绘制机身自定义 Inspector，并在数值变化时触发预览重建。 / Draw the custom fuselage inspector and trigger preview rebuilds when values change.
 	public override void OnInspectorGUI()
@@ -127,6 +159,8 @@ public class FuselagePartEditor : UnityEditor.Editor
 			PartInspectorUtility.QueuePreviewRefresh(fuselage, lightweight: true);
 		}
 
+		DrawRearSideNormalControls(fuselage);
+
 		EditorGUILayout.Space(8f);
 		if (GUILayout.Button("Rebuild Preview", GUILayout.Height(24f)))
 		{
@@ -139,6 +173,123 @@ public class FuselagePartEditor : UnityEditor.Editor
 		DrawCopySectionButtons(fuselage);
 		PartInspectorUtility.DrawPartActions(fuselage);
 		PartConnectionEditorUtility.DrawConnectionEditor(fuselage);
+	}
+
+	// 在所有 Scene 视图中持续绘制已开启的 Rear 端侧面法线，不依赖选中状态。 / Draw enabled rear-end side normals in every Scene view without depending on selection.
+	private static void DrawRearSideNormalsInScene(SceneView sceneView)
+	{
+		if (Event.current == null || Event.current.type != EventType.Repaint)
+		{
+			return;
+		}
+
+		foreach (FuselagePart fuselage in Resources.FindObjectsOfTypeAll<FuselagePart>())
+		{
+			if (fuselage == null || fuselage.gameObject == null || !fuselage.gameObject.scene.IsValid())
+			{
+				continue;
+			}
+
+			if (TryGetEnabledRearSideNormalDisplaySettings(fuselage, out RearSideNormalDisplaySettings settings))
+			{
+				DrawRearSideNormalsForFuselage(fuselage, settings);
+			}
+		}
+	}
+
+	private static void DrawRearSideNormalsForFuselage(FuselagePart fuselage, RearSideNormalDisplaySettings settings)
+	{
+		fuselage.CollectRearSideNormalSamples(settings.Density, RearSideNormalSamples);
+		if (RearSideNormalSamples.Count == 0)
+		{
+			return;
+		}
+
+		Matrix4x4 localToWorld = fuselage.transform.localToWorldMatrix;
+		Matrix4x4 normalMatrix = localToWorld.inverse.transpose;
+		using (new Handles.DrawingScope(GetRearSideNormalColor(fuselage)))
+		{
+			for (int i = 0; i < RearSideNormalSamples.Count; i++)
+			{
+				FuselageSideNormalSample sample = RearSideNormalSamples[i];
+				Vector3 worldPosition = localToWorld.MultiplyPoint3x4(sample.LocalPosition);
+				Vector3 worldNormal = normalMatrix.MultiplyVector(sample.LocalNormal);
+				if (worldNormal.sqrMagnitude <= 0.0001f)
+				{
+					continue;
+				}
+
+				float length = HandleUtility.GetHandleSize(worldPosition) * RearSideNormalHandleScale;
+				Handles.DrawLine(worldPosition, worldPosition + worldNormal.normalized * length);
+			}
+		}
+	}
+
+	// 根据 PartId 生成稳定的调试颜色，方便同时区分多个机身。 / Generate a stable debug color from PartId so different fuselages are easy to distinguish.
+	private static Color GetRearSideNormalColor(FuselagePart fuselage)
+	{
+		int partId = fuselage != null ? fuselage.PartId : 0;
+		uint hash = (uint)Mathf.Max(1, partId) * 2654435761u;
+		float hue = (hash & 0x00FFFFFFu) / 16777215f;
+		Color color = Color.HSVToRGB(hue, 0.72f, 1f);
+		color.a = 0.95f;
+		return color;
+	}
+
+	private static bool TryGetEnabledRearSideNormalDisplaySettings(FuselagePart fuselage, out RearSideNormalDisplaySettings settings)
+	{
+		settings = default;
+		return fuselage != null
+			&& RearSideNormalDisplaySettingsByInstanceId.TryGetValue(fuselage.GetInstanceID(), out settings)
+			&& settings.Show;
+	}
+
+	// 绘制只影响编辑器显示的 Rear 法线开关和密度控制。 / Draw editor-only controls for the rear normal display and density.
+	private static void DrawRearSideNormalControls(FuselagePart fuselage)
+	{
+		if (fuselage == null)
+		{
+			return;
+		}
+
+		RearSideNormalDisplaySettings settings = GetRearSideNormalDisplaySettings(fuselage);
+		EditorGUILayout.Space(8f);
+		EditorGUILayout.LabelField("Fuselage Normal View", EditorStyles.boldLabel);
+		EditorGUI.BeginChangeCheck();
+		settings.Show = EditorGUILayout.Toggle("Show Rear Side Normals", settings.Show);
+		using (new EditorGUI.DisabledScope(!settings.Show))
+		{
+			settings.Density = EditorGUILayout.IntSlider(
+				new GUIContent("Rear Normal Density", "1 = vertices only; 2 = one interpolated sample between each pair of vertices."),
+				Mathf.Clamp(settings.Density, 1, RearSideNormalDensityMax),
+				1,
+				RearSideNormalDensityMax);
+		}
+
+		if (!EditorGUI.EndChangeCheck())
+		{
+			return;
+		}
+
+		RearSideNormalDisplaySettingsByInstanceId[fuselage.GetInstanceID()] = settings;
+		SceneView.RepaintAll();
+	}
+
+	private static RearSideNormalDisplaySettings GetRearSideNormalDisplaySettings(FuselagePart fuselage)
+	{
+		int instanceId = fuselage.GetInstanceID();
+		if (!RearSideNormalDisplaySettingsByInstanceId.TryGetValue(instanceId, out RearSideNormalDisplaySettings settings))
+		{
+			settings = new RearSideNormalDisplaySettings { Density = 1 };
+			RearSideNormalDisplaySettingsByInstanceId[instanceId] = settings;
+		}
+
+		if (settings.Density < 1)
+		{
+			settings.Density = 1;
+		}
+
+		return settings;
 	}
 
 	// 绘制前后端面的截面复制按钮。 / Draw the section-copy buttons for the front and rear fuselage ends.
@@ -488,6 +639,43 @@ public class FuselagePartEditor : UnityEditor.Editor
 		return GetSelectedFuselages().Any(fuselage => fuselage != null && fuselage.CanResetUniformScaleToShape());
 	}
 
+	[MenuItem(SmoothSelectedFuselageSeamsMenuPath)]
+	// 手动对选中机身涉及的接缝执行法线平滑。 / Manually smooth normals on seams touched by the selected fuselages.
+	private static void SmoothSelectedFuselageSeams()
+	{
+		FuselagePart[] selected = GetSelectedFuselagesIncludingChildren();
+		if (selected.Length == 0)
+		{
+			return;
+		}
+
+		int craftCount = 0;
+		foreach (IGrouping<Craft, FuselagePart> group in selected
+			.Select(fuselage => new { Fuselage = fuselage, Craft = fuselage.GetComponentInParent<Craft>() })
+			.Where(item => item.Craft != null)
+			.GroupBy(item => item.Craft, item => item.Fuselage))
+		{
+			Craft craft = group.Key;
+			int[] affectedPartIds = group
+				.Select(fuselage => fuselage.PartId)
+				.Distinct()
+				.ToArray();
+			FuselagePart.ApplyNeighbourSmoothing(craft, affectedPartIds);
+			EditorUtility.SetDirty(craft);
+			craftCount++;
+		}
+
+		EditorApplication.QueuePlayerLoopUpdate();
+		SceneView.RepaintAll();
+		Debug.Log($"Smoothed selected fuselage seams: {selected.Length} fuselage(s), {craftCount} craft(s).");
+	}
+
+	[MenuItem(SmoothSelectedFuselageSeamsMenuPath, true)]
+	private static bool ValidateSmoothSelectedFuselageSeams()
+	{
+		return GetSelectedFuselagesIncludingChildren().Length > 0;
+	}
+
 	// 读取当前是否只选中了一个可编辑机身。 / Check whether the current selection contains exactly one editable fuselage.
 	private static bool TryGetSingleSelectedFuselage(out FuselagePart fuselage)
 	{
@@ -515,6 +703,16 @@ public class FuselagePartEditor : UnityEditor.Editor
 	private static FuselagePart[] GetSelectedFuselages()
 	{
 		return Selection.GetFiltered<FuselagePart>(SelectionMode.Editable | SelectionMode.ExcludePrefab | SelectionMode.TopLevel);
+	}
+
+	private static FuselagePart[] GetSelectedFuselagesIncludingChildren()
+	{
+		return Selection.GetTransforms(SelectionMode.Editable | SelectionMode.ExcludePrefab | SelectionMode.TopLevel)
+			.Where(transform => transform != null)
+			.SelectMany(transform => transform.GetComponentsInChildren<FuselagePart>(includeInactive: true))
+			.Where(fuselage => fuselage != null && fuselage.GetComponentInParent<Craft>() != null)
+			.Distinct()
+			.ToArray();
 	}
 
 	// 按比例从当前选中的机身生成前后两段，原机身保持不变。 / Create rear and front slice spans from the selected fuselage while keeping the source unchanged.
@@ -948,7 +1146,7 @@ public class FuselagePartEditor : UnityEditor.Editor
 		}
 	}
 
- // 按当前编辑器语义绘制每边切割：滑块大于 0 即自动启用，回到 0 则关闭。 / Draw per-side slice controls so values above zero enable cutting and zero disables it.
+ // 按原版语义绘制每边切割：滑块左端表示未切割，edge 外扩时左端可能小于 0。 / Draw per-side slice controls so the left edge means uncut; edge bulges can push it below zero.
 	private static void DrawCuttingGroup(SerializedProperty section, Color labelColor)
 	{
 		SerializedProperty cutEnabled = section.FindPropertyRelative("CutEnabled");
@@ -970,12 +1168,11 @@ public class FuselagePartEditor : UnityEditor.Editor
 		EditorGUI.indentLevel--;
 	}
 
-	// 把单边切割画成条件扩展范围的滑块；0 仍表示不切，只有真实轮廓超出名义外框时才开放 <0 或 >1 的输入。 / Draw one cut side with a conditionally extended range; zero still means uncut, while <0 or >1 become available only when the live outline requires it.
+	// 把单边切割画成按原版取整的扩展范围滑块；最小端会关闭切割而不是写入一个有效 cutting 值。 / Draw one cut side with the original rounded range; the minimum end disables cutting instead of storing an active cutting value.
 	private static void DrawCutField(SerializedProperty enabledProperty, SerializedProperty valueProperty, string label, float minCutting, float maxCutting, Color labelColor)
 	{
-		float sliderMin = Mathf.Min(0f, minCutting);
-		float sliderMax = Mathf.Max(1f, maxCutting);
-		float currentValue = enabledProperty.boolValue ? Mathf.Clamp(valueProperty.floatValue, sliderMin, sliderMax) : 0f;
+		GetCutSliderRange(minCutting, maxCutting, out float sliderMin, out float sliderMax);
+		float currentValue = enabledProperty.boolValue ? Mathf.Clamp(valueProperty.floatValue, sliderMin, sliderMax) : sliderMin;
 		Rect position = EditorGUILayout.GetControlRect();
 		Rect fieldRect = EditorGUI.PrefixLabel(
 			position,
@@ -990,9 +1187,28 @@ public class FuselagePartEditor : UnityEditor.Editor
 		editedValue = EditorGUI.FloatField(floatRect, editedValue);
 
 		float clampedValue = Mathf.Clamp(editedValue, sliderMin, sliderMax);
-		bool enabled = Mathf.Abs(clampedValue) > 0.0001f;
+		bool enabled = clampedValue > sliderMin + SliceNoCutEpsilon;
 		enabledProperty.boolValue = enabled;
 		valueProperty.floatValue = enabled ? Mathf.Clamp(clampedValue, minCutting, maxCutting) : 0f;
+	}
+
+	// 复刻原版 cutting slider 的 0.02 步长外扩范围，让 edge curvature 造成的负下限也能完整显示。 / Reproduce the original 0.02-step expanded cutting slider range so edge-curvature negative minima are visible.
+	private static void GetCutSliderRange(float minCutting, float maxCutting, out float sliderMin, out float sliderMax)
+	{
+		sliderMin = Mathf.Floor((minCutting + SliceRangeEpsilon) * SliceRangeStepInverse) * SliceRangeStep;
+		sliderMax = Mathf.Ceil((maxCutting - SliceRangeEpsilon) * SliceRangeStepInverse) * SliceRangeStep;
+		if (!float.IsFinite(sliderMin))
+		{
+			sliderMin = 0f;
+		}
+		if (!float.IsFinite(sliderMax))
+		{
+			sliderMax = 1f;
+		}
+		if (sliderMax <= sliderMin)
+		{
+			sliderMax = sliderMin + SliceRangeStep;
+		}
 	}
 
 	// 读取一个截面小组的折叠状态。 / Read the persisted foldout state for one section group.
