@@ -264,8 +264,8 @@ public sealed class CraftInfo
 		return _pinnedTransformByPartId.ContainsKey(partId);
 	}
 
-	// 按 Pin 基准校准零件 Transform，发生回退时返回 true。 / Correct one part transform from the pin baseline and return true when a correction occurred.
-	public bool ApplyPinnedTransform(Part part, bool warnIfChanged, string context)
+	// 按 Pin 权威文本校准零件 Transform，发生回退时返回 true。 / Correct one part transform from the authoritative pin text and return true when a correction occurred.
+	public bool ApplyPinnedTransform(Part part, bool logIfChanged, string context)
 	{
 		if (part == null || !TryGetPinnedTransform(part.PartId, out Vector3 position, out Vector3 rotation))
 		{
@@ -274,16 +274,16 @@ public sealed class CraftInfo
 
 		Vector3 previousPosition = part.transform.localPosition;
 		Vector3 previousRotation = part.transform.localEulerAngles;
-		if (ApproximatelyPrecise(previousPosition, position) && ApproximatelyPrecise(previousRotation, rotation))
+		part.transform.localPosition = position;
+		part.transform.localEulerAngles = rotation;
+		if (Exactly(previousPosition, position) && Exactly(previousRotation, rotation))
 		{
 			return false;
 		}
 
-		part.transform.localPosition = position;
-		part.transform.localEulerAngles = rotation;
-		if (warnIfChanged)
+		if (logIfChanged)
 		{
-			Debug.LogWarning(
+			Debug.Log(
 				$"Pinned part {part.PartId} transform was corrected from CraftInfo during {context}. " +
 				$"position {FormatVector3Precise(previousPosition)} -> {FormatVector3Precise(position)}, " +
 				$"rotation {FormatVector3Precise(previousRotation)} -> {FormatVector3Precise(rotation)}",
@@ -293,22 +293,47 @@ public sealed class CraftInfo
 		return true;
 	}
 
-	// 导出时用 Pin 基准覆盖 XML 坐标，不读取 GameObject Transform。 / Override export XML coordinates from the pin baseline without reading the GameObject Transform.
+	// 导出时用 Pin 权威文本覆盖 XML 坐标，不读取 GameObject Transform。 / Override export XML coordinates from the authoritative pin text without reading the GameObject Transform.
 	public bool ApplyPinnedTransformToXml(Part part, XElement partElement)
 	{
-		if (part == null || partElement == null)
+		return part != null && ApplyPinnedTransformToXml(part.PartId, partElement);
+	}
+
+	// 用指定 PartId 的 Pin 权威文本覆盖 XML 坐标。 / Override XML coordinates from the authoritative pin text for the given PartId.
+	public bool ApplyPinnedTransformToXml(int partId, XElement partElement)
+	{
+		return ApplyPinnedTransformToXml(partId, partElement, logIfChanged: false, context: null, logContext: null);
+	}
+
+	// 用指定 PartId 的 Pin 权威文本覆盖 XML 坐标，并按需记录普通日志。 / Override XML coordinates from pin text and optionally log the correction.
+	public bool ApplyPinnedTransformToXml(int partId, XElement partElement, bool logIfChanged, string context, UnityEngine.Object logContext)
+	{
+		if (partId <= 0 || partElement == null)
 		{
 			return false;
 		}
 
 		EnsurePinnedLookup();
-		if (!_pinnedTransformByPartId.TryGetValue(part.PartId, out PinnedPartTransformRecord record) || record == null)
+		if (!_pinnedTransformByPartId.TryGetValue(partId, out PinnedPartTransformRecord record) || record == null)
 		{
 			return false;
 		}
 
+		string previousPosition = (string)partElement.Attribute("position") ?? string.Empty;
+		string previousRotation = (string)partElement.Attribute("rotation") ?? string.Empty;
 		partElement.SetAttributeValue("position", record.PositionText);
 		partElement.SetAttributeValue("rotation", record.RotationText);
+		if (logIfChanged
+			&& (!string.Equals(previousPosition, record.PositionText, StringComparison.Ordinal)
+				|| !string.Equals(previousRotation, record.RotationText, StringComparison.Ordinal)))
+		{
+			Debug.Log(
+				$"Pinned part {partId} XML transform was corrected from CraftInfo during {context}. " +
+				$"position {previousPosition} -> {record.PositionText}, " +
+				$"rotation {previousRotation} -> {record.RotationText}",
+				logContext);
+		}
+
 		return true;
 	}
 
@@ -613,12 +638,9 @@ public sealed class CraftInfo
 		_orderedPartIds ??= Array.Empty<int>();
 	}
 
-	private static bool ApproximatelyPrecise(Vector3 a, Vector3 b)
+	private static bool Exactly(Vector3 a, Vector3 b)
 	{
-		const float epsilon = 0.000001f;
-		return Mathf.Abs(a.x - b.x) <= epsilon
-			&& Mathf.Abs(a.y - b.y) <= epsilon
-			&& Mathf.Abs(a.z - b.z) <= epsilon;
+		return a.x == b.x && a.y == b.y && a.z == b.z;
 	}
 
 	private static string FormatVector3Precise(Vector3 value)

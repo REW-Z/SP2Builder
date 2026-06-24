@@ -64,6 +64,14 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 	private bool _hasConnectionData;
 
+	private readonly HashSet<int> _coreConnectedPartIds = new HashSet<int>();
+
+	private bool _coreConnectivityDirty = true;
+
+	private bool _hasCoreConnectivityRoot;
+
+	private const string CorePartTypePrefix = "FlightComputer-";
+
     private static bool _editorUpdateRegistered;
 
 	private static readonly Dictionary<int, Craft> _editorUpdateCrafts = new Dictionary<int, Craft>();
@@ -130,6 +138,18 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 	public bool RenderWindowBayPreviewMeshes => _renderWindowBayPreviewMeshes;
 
 	public CraftInfo Info => EnsureCraftInfo();
+
+	// 判断指定零件是否应该显示为未连核心的灰色预览材质。 / Check whether this part should use the disconnected gray preview material.
+	public bool ShouldUseDisconnectedPreviewMaterial(Part part)
+	{
+		if (part == null || part.PartId <= 0)
+		{
+			return false;
+		}
+
+		EnsureCoreConnectivity();
+		return _hasCoreConnectivityRoot && !_coreConnectedPartIds.Contains(part.PartId);
+	}
 
 	public int PaintMaterialCount
 	{
@@ -279,7 +299,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 		foreach (Part part in GetExportParts())
 		{
-			Info.ApplyPinnedTransform(part, warnIfChanged: true, "export");
+			Info.ApplyPinnedTransform(part, logIfChanged: true, "export");
 			XElement partElement = part.ExportPartElement();
 			Info.ApplyPinnedTransformToXml(part, partElement);
 			partsElement.Add(partElement);
@@ -329,6 +349,12 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 		int partId = XmlUtil.ParseInt((string)partElement.Attribute("id"), int.MinValue);
 		ValidatePartIdAvailable(partId, ignoredPart: null);
+		bool isPinned = Info.IsPinned(partId);
+		if (isPinned)
+		{
+			Info.ApplyPinnedTransformToXml(partId, partElement, logIfChanged: true, "import", this);
+		}
+
 		Type componentType = ResolvePartComponentType((string)partElement.Attribute("partType"), partElement);
 		GameObject partObject = new GameObject();
 		partObject.transform.SetParent(ResolveImportedPartParent(partId), false);
@@ -336,10 +362,10 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		part.InitializeFromXml(partElement, orderIndex);
 		_partById[part.PartId] = part;
 		_partIndexDirty = true;
-		bool isPinned = Info.IsPinned(part.PartId);
+		_coreConnectivityDirty = true;
 		if (isPinned)
 		{
-			Info.ApplyPinnedTransform(part, warnIfChanged: true, "import");
+			Info.ApplyPinnedTransform(part, logIfChanged: true, "import");
 		}
 		ApplyScenePickingLock(partObject, lockScenePicking || isPinned);
 		if (partElement.Element("Label.State") != null)
@@ -400,14 +426,15 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		Info.RemovePartRecords(new[] { removedPartId });
 		_partById.Remove(removedPartId);
 		RefreshConnectionDataFlag();
+		RefreshCoreConnectivity();
+		ApplyCoreConnectivityPreviewMaterials();
 		EditorUtility.SetDirty(this);
-		RepaintScene();
 	}
 
 	// 对 pinned 零件执行一次低成本校准。 / Run one low-cost correction pass for a pinned part.
-	public bool EnforcePinnedPartTransform(Part part, bool warnIfChanged, string context)
+	public bool EnforcePinnedPartTransform(Part part, bool logIfChanged, string context)
 	{
-		return Info.ApplyPinnedTransform(part, warnIfChanged, context);
+		return Info.ApplyPinnedTransform(part, logIfChanged, context);
 	}
 
 	private CraftInfo EnsureCraftInfo()
@@ -757,6 +784,122 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		}
 
 		RefreshConnectionDataFlag();
+		RefreshCoreConnectivity();
+		ApplyCoreConnectivityPreviewMaterials();
+	}
+
+	// 标记并立即重建核心连通缓存。 / Mark and rebuild the cached core connectivity graph.
+	private void RefreshCoreConnectivity()
+	{
+		_coreConnectivityDirty = true;
+		EnsureCoreConnectivity();
+	}
+
+	// 按需从 FlightComputer 零件遍历当前连接图。 / Traverse the current connection graph from FlightComputer parts on demand.
+	private void EnsureCoreConnectivity()
+	{
+		if (!_coreConnectivityDirty)
+		{
+			return;
+		}
+
+		RebuildCoreConnectivity();
+	}
+
+	// 重建可从核心零件到达的 PartId 集合。 / Rebuild the set of PartIds reachable from the core part.
+	private void RebuildCoreConnectivity()
+	{
+		_coreConnectedPartIds.Clear();
+		_hasCoreConnectivityRoot = false;
+		_coreConnectivityDirty = false;
+
+		Part[] parts = GetComponentsInChildren<Part>(includeInactive: true);
+		Dictionary<int, Part> partsById = new Dictionary<int, Part>();
+		List<int> corePartIds = new List<int>();
+		foreach (Part part in parts)
+		{
+			if (part == null || part.PartId <= 0)
+			{
+				continue;
+			}
+
+			if (!partsById.ContainsKey(part.PartId))
+			{
+				partsById.Add(part.PartId, part);
+			}
+
+			if (IsCorePart(part))
+			{
+				corePartIds.Add(part.PartId);
+			}
+		}
+
+		if (corePartIds.Count == 0)
+		{
+			return;
+		}
+
+		_hasCoreConnectivityRoot = true;
+		Dictionary<int, List<int>> adjacency = new Dictionary<int, List<int>>();
+		foreach (Part part in partsById.Values)
+		{
+			foreach (PartConnectionEndpoint endpoint in part.ConnectionEndpoints)
+			{
+				if (endpoint == null || endpoint.ConnectedPartId <= 0 || !partsById.ContainsKey(endpoint.ConnectedPartId))
+				{
+					continue;
+				}
+
+				AddAdjacentPartId(adjacency, part.PartId, endpoint.ConnectedPartId);
+				AddAdjacentPartId(adjacency, endpoint.ConnectedPartId, part.PartId);
+			}
+		}
+
+		Queue<int> queue = new Queue<int>();
+		foreach (int corePartId in corePartIds)
+		{
+			if (_coreConnectedPartIds.Add(corePartId))
+			{
+				queue.Enqueue(corePartId);
+			}
+		}
+
+		while (queue.Count > 0)
+		{
+			int partId = queue.Dequeue();
+			if (!adjacency.TryGetValue(partId, out List<int> connectedPartIds))
+			{
+				continue;
+			}
+
+			foreach (int connectedPartId in connectedPartIds)
+			{
+				if (_coreConnectedPartIds.Add(connectedPartId))
+				{
+					queue.Enqueue(connectedPartId);
+				}
+			}
+		}
+	}
+
+	// 把一条连接加入无向邻接表。 / Add one link to the undirected adjacency table.
+	private static void AddAdjacentPartId(Dictionary<int, List<int>> adjacency, int partId, int connectedPartId)
+	{
+		if (!adjacency.TryGetValue(partId, out List<int> connectedPartIds))
+		{
+			connectedPartIds = new List<int>();
+			adjacency.Add(partId, connectedPartIds);
+		}
+
+		connectedPartIds.Add(connectedPartId);
+	}
+
+	// 核心零件以 FlightComputer- 开头。 / Core parts are identified by the FlightComputer- prefix.
+	private static bool IsCorePart(Part part)
+	{
+		return part != null
+			&& !string.IsNullOrWhiteSpace(part.PartType)
+			&& part.PartType.StartsWith(CorePartTypePrefix, StringComparison.Ordinal);
 	}
 
 	// 把多次编辑器刷新请求合并成一次延迟的整机重建。 / Coalesce multiple editor refresh requests into a single delayed craft rebuild.
@@ -1095,6 +1238,21 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 			return;
 		}
 
+		EnsureCoreConnectivity();
+		RestorePreviewMaterialsOnly();
+		RepaintScene();
+	}
+
+	// 连接图变化后只重绑材质，不触发 Mesh 重建。 / Rebind materials after connection changes without rebuilding meshes.
+	private void ApplyCoreConnectivityPreviewMaterials()
+	{
+		RestorePreviewMaterialsOnly();
+		RepaintScene();
+	}
+
+	// 恢复所有使用预览材质的零件材质。 / Restore preview materials for all material-backed parts.
+	private void RestorePreviewMaterialsOnly()
+	{
 		foreach (FuselagePart fuselage in GetComponentsInChildren<FuselagePart>(includeInactive: true))
 		{
 			if (fuselage == null)
@@ -1124,8 +1282,6 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 			bay.RestorePreviewMaterialOnly();
 		}
-
-		RepaintScene();
 	}
 
 	// 根据当前排队模式返回全量或局部受影响的零件集合。 / Return either all parts or just the impacted subset for the queued rebuild.
@@ -1304,6 +1460,9 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 		_partById.Clear();
 		_partIndexDirty = true;
 		Info.ClearRestoredHierarchyNodes();
+		_coreConnectedPartIds.Clear();
+		_hasCoreConnectivityRoot = false;
+		_coreConnectivityDirty = true;
 		_suppressPartDestroyCleanup = true;
 		try
 		{
@@ -1361,6 +1520,7 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 		if (connectionsElement == null)
 		{
+			RefreshCoreConnectivity();
 			return;
 		}
 
@@ -1401,6 +1561,8 @@ public class Craft : MonoBehaviour, ISerializationCallbackReceiver
 
 			connectionId++;
 		}
+
+		RefreshCoreConnectivity();
 	}
 
 	// 根据当前所有端点重新计算是否存在连接数据。 / Recompute whether the craft currently contains any connection data.

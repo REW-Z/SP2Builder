@@ -1506,7 +1506,9 @@ internal static class FuselageGeometry
 
 				float edgeLimit = Vector2.Distance(points[i].Position, points[next].Position) / shrink;
 				maxEdgeLimit = Mathf.Max(maxEdgeLimit, edgeLimit);
-				if (step + Epsilon >= edgeLimit)
+				// 原版只合并在当前 inset step 下确实会收缩到零的边；负 shrink 表示该边正在变长。
+				// Only merge edges that actually shrink to zero; negative shrink means the edge is growing.
+				if (step * shrink > 0f && step + Epsilon >= edgeLimit)
 				{
 					if (edgeLimit < step - 0.00001f)
 					{

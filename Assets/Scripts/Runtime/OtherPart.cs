@@ -4,7 +4,7 @@ using UnityEngine;
 [ExecuteAlways]
 public class OtherPart : Part
 {
-    private const float GizmoRadius = 0.24f;
+    public const float GizmoRadius = 0.24f;
 
     // 普通零件不生成渲染网格，只保留 Gizmos 线框占位。 / Generic parts do not create render meshes; they only draw a lightweight Gizmos placeholder.
     public override void RefreshPreview()

@@ -223,6 +223,8 @@ internal static class PreviewMaterialFactory
 
 	private static Material _otherMaterial;
 
+	private static Material _disconnectedMaterial;
+
 	private static Material _labelMaterial;
 
 	private static readonly Dictionary<string, Material> ThemedMaterials = new Dictionary<string, Material>();
@@ -244,6 +246,11 @@ internal static class PreviewMaterialFactory
 
 	public static Material GetFuselageMaterial(Part part, bool transparent)
 	{
+		if (ShouldUseDisconnectedMaterial(part))
+		{
+			return GetDisconnectedMaterial();
+		}
+
 		if (TryGetThemedMaterial(part, transparent, transparent ? 0.35f : 1f, out Material material))
 		{
 			return material;
@@ -259,6 +266,11 @@ internal static class PreviewMaterialFactory
 
 	public static Material GetWindowMaterial(Part part)
 	{
+		if (ShouldUseDisconnectedMaterial(part))
+		{
+			return GetDisconnectedMaterial();
+		}
+
 		if (TryGetThemedMaterial(part, transparent: true, transparentAlpha: 0.4f, out Material material))
 		{
 			return material;
@@ -274,6 +286,11 @@ internal static class PreviewMaterialFactory
 
 	public static Material GetBayMaterial(Part part)
 	{
+		if (ShouldUseDisconnectedMaterial(part))
+		{
+			return GetDisconnectedMaterial();
+		}
+
 		if (TryGetThemedMaterial(part, transparent: true, transparentAlpha: 0.45f, out Material material))
 		{
 			return material;
@@ -289,6 +306,11 @@ internal static class PreviewMaterialFactory
 
 	public static Material GetOtherMaterial(Part part)
 	{
+		if (ShouldUseDisconnectedMaterial(part))
+		{
+			return GetDisconnectedMaterial();
+		}
+
 		if (TryGetThemedMaterial(part, transparent: false, transparentAlpha: 1f, out Material material))
 		{
 			return material;
@@ -307,6 +329,22 @@ internal static class PreviewMaterialFactory
 		return _labelMaterial ??= CreateMaterial(new Color(0.95f, 0.95f, 0.95f), false);
 	}
 
+	private static Material GetDisconnectedMaterial()
+	{
+		return _disconnectedMaterial ??= CreateMaterial(new Color(0.48f, 0.48f, 0.48f), false);
+	}
+
+	private static bool ShouldUseDisconnectedMaterial(Part part)
+	{
+		if (part == null)
+		{
+			return false;
+		}
+
+		Craft craft = part.GetComponentInParent<Craft>();
+		return craft != null && craft.ShouldUseDisconnectedPreviewMaterial(part);
+	}
+
 	private static bool TryGetThemedMaterial(Part part, bool transparent, float transparentAlpha, out Material material)
 	{
 		material = null;
@@ -316,7 +354,7 @@ internal static class PreviewMaterialFactory
 		}
 
 		Craft craft = part.GetComponentInParent<Craft>();
-		if (!craft.TryGetThemeMaterial(part.PrimaryMaterialId, out CraftThemeMaterial themeMaterial))
+		if (craft == null || !craft.TryGetThemeMaterial(part.PrimaryMaterialId, out CraftThemeMaterial themeMaterial))
 		{
 			return false;
 		}
